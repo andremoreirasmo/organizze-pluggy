@@ -33,9 +33,26 @@ body,
 body {
   font-family: var(--oz-font);
   color: var(--oz-ink);
-  background: var(--oz-bg);
+  background: transparent;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+}
+
+/* Keep the page wash tied to the viewport so long lists don't flatten it to solid green. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top right, rgba(143, 230, 171, 0.35), transparent 42%),
+    linear-gradient(180deg, var(--oz-bg-warm) 0%, var(--oz-bg) 48%, #e8ebe4 100%);
+}
+
+#root {
+  min-height: 100svh;
+  position: relative;
 }
 
 button,

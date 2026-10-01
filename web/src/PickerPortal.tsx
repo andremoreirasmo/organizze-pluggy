@@ -71,6 +71,7 @@ type PortalProps = {
   panelRef: RefObject<HTMLDivElement | null>
   onClose: () => void
   children: ReactNode
+  minWidth?: number
 }
 
 export function PickerPortal({
@@ -79,6 +80,7 @@ export function PickerPortal({
   panelRef,
   onClose,
   children,
+  minWidth,
 }: PortalProps) {
   const style = usePickerPanel(open, triggerRef)
   const onCloseRef = useRef(onClose)
@@ -115,14 +117,20 @@ export function PickerPortal({
     return null
   }
 
+  const width = Math.max(style.width, minWidth ?? 0)
+  const left = Math.min(
+    style.left,
+    Math.max(12, window.innerWidth - width - 12),
+  )
+
   return createPortal(
     <div
       ref={panelRef}
       className="picker-panel picker-panel-portal"
       style={{
         top: style.top,
-        left: style.left,
-        width: style.width,
+        left,
+        width,
         maxHeight: style.maxHeight,
       }}
     >

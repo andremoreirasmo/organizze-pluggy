@@ -1,13 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
 import { CreditCardPicker } from './CreditCardPicker'
+import { FilterDropdown } from './FilterDropdown'
 import {
   InvoicePicker,
   formatInvoiceDate,
   invoiceOptionLabel,
 } from './InvoicePicker'
 import { PullToRefresh } from './PullToRefresh'
+import {
+  patchSearchParams,
+  readAccountParam,
+  readKindParam,
+  readMonthParam,
+  readQueryParam,
+  ROUTES,
+  type ReconciliationKindFilter,
+} from './routes'
 
 export type ReconciliationKind =
   | 'bank'
@@ -53,6 +64,9 @@ export type QueuePluggyTransaction = {
   amountCents: number
   organizzeAmountCents: number
   date: string
+  currencyCode: string | null
+  amountInAccountCurrency: number | null
+  amountInAccountCurrencyCents: number | null
   kind: ReconciliationKind
   accountName: string
   accountType: string | null
@@ -163,6 +177,64 @@ function formatBRL(amountCents: number): string {
   })
 }
 
+function formatMoney(amountCents: number, currencyCode: string): string {
+  const code = currencyCode.trim().toUpperCase() || 'BRL'
+  try {
+    return (amountCents / 100).toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: code,
+    })
+  } catch {
+    return `${code} ${(amountCents / 100).toLocaleString('pt-BR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`
+  }
+}
+
+function isForeignCurrency(currencyCode: string | null | undefined): boolean {
+  return Boolean(currencyCode && currencyCode.toUpperCase() !== 'BRL')
+}
+
+function PluggyAmountDisplay({
+  pluggy,
+  className,
+}: {
+  pluggy: Pick<
+    QueuePluggyTransaction,
+    | 'organizzeAmountCents'
+    | 'amountCents'
+    | 'currencyCode'
+    | 'amountInAccountCurrencyCents'
+  >
+  className?: string
+}) {
+  const foreign = isForeignCurrency(pluggy.currencyCode)
+  const currency = (pluggy.currencyCode ?? 'BRL').toUpperCase()
+  const signClass = pluggy.organizzeAmountCents < 0 ? 'neg' : 'pos'
+
+  if (foreign) {
+    const original = formatMoney(pluggy.amountCents, currency)
+    const converted =
+      pluggy.amountInAccountCurrencyCents !== null &&
+      pluggy.amountInAccountCurrencyCents !== undefined
+        ? formatBRL(pluggy.organizzeAmountCents)
+        : null
+    return (
+      <div className={`recon-amount${className ? ` ${className}` : ''} ${signClass}`}>
+        <strong>{original}</strong>
+        {converted ? <span className="recon-amount-fx">≈ {converted}</span> : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className={`recon-amount${className ? ` ${className}` : ''} ${signClass}`}>
+      {formatBRL(pluggy.organizzeAmountCents)}
+    </div>
+  )
+}
+
 function formatDateBR(isoDate: string): string {
   return formatInvoiceDate(isoDate)
 }
@@ -252,6 +324,11 @@ function formatPluggyAccountLabel(pluggy: {
     }
   }
   return parts.join(' · ')
+}
+
+/** Group filter by Organizze destination (bank/card), not physical card last4. */
+function accountFilterKey(pluggy: QueuePluggyTransaction): string {
+  return `${pluggy.mappedTargetType}|${pluggy.mappedOrganizzeTargetId}`
 }
 
 function organizzeDestinationLabel(
@@ -372,9 +449,33 @@ type Props = {
 }
 
 export function ReconciliationView({ apiFetch, onError }: Props) {
-  const [yearMonth, setYearMonth] = useState(currentYearMonth)
+  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const isActive =
+    location.pathname === ROUTES.reconcile ||
+    location.pathname === '/' ||
+    location.pathname === ''
+  const wasActiveRef = useRef(isActive)
+
+  const [yearMonth, setYearMonth] = useState(
+    () =>
+      readMonthParam(new URLSearchParams(window.location.search)) ??
+      currentYearMonth(),
+  )
   const [queue, setQueue] = useState<ReconciliationQueueResponse | null>(null)
   const [loading, setLoading] = useState(false)
+  const [filterAccountKey, setFilterAccountKey] = useState(
+    () => readAccountParam(new URLSearchParams(window.location.search)) ?? '',
+  )
+  const [filterKind, setFilterKind] = useState<ReconciliationKindFilter>(
+    () => readKindParam(new URLSearchParams(window.location.search)),
+  )
+  const [filterQuery, setFilterQuery] = useState(
+    () => readQueryParam(new URLSearchParams(window.location.search)) ?? '',
+  )
+  const [searchOpen, setSearchOpen] = useState(() =>
+    Boolean(readQueryParam(new URLSearchParams(window.location.search))),
+  )
   const [action, setAction] = useState<ActionState | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [categories, setCategories] = useState<OrganizzeCategory[]>([])
@@ -410,6 +511,63 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       }),
     [ignoredItems, range.from, range.to],
   )
+
+  const accountFilterOptions = useMemo(() => {
+    if (!queue) {
+      return []
+    }
+    const labels = new Map<string, string>()
+    for (const item of queue.items) {
+      const key = accountFilterKey(item.pluggy)
+      if (!labels.has(key)) {
+        labels.set(
+          key,
+          organizzeDestinationLabel(
+            item.pluggy,
+            creditCards,
+            organizzeAccounts,
+          ),
+        )
+      }
+    }
+    return [...labels.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
+  }, [queue, creditCards, organizzeAccounts])
+
+  const filteredItems = useMemo(() => {
+    if (!queue) {
+      return []
+    }
+    const query = filterQuery.trim().toLowerCase()
+    return queue.items.filter((item) => {
+      if (
+        filterAccountKey &&
+        accountFilterKey(item.pluggy) !== filterAccountKey
+      ) {
+        return false
+      }
+      if (filterKind && item.pluggy.kind !== filterKind) {
+        return false
+      }
+      if (query) {
+        const haystack = [
+          item.pluggy.description,
+          item.pluggy.category ?? '',
+          formatPluggyAccountLabel(item.pluggy),
+        ]
+          .join(' ')
+          .toLowerCase()
+        if (!haystack.includes(query)) {
+          return false
+        }
+      }
+      return true
+    })
+  }, [queue, filterAccountKey, filterKind, filterQuery])
+
+  const filtersActive =
+    Boolean(filterAccountKey) || Boolean(filterKind) || Boolean(filterQuery.trim())
   const anyBusy = action !== null
   const toolbarBusy = loading || anyBusy
   const modalBusy =
@@ -498,6 +656,95 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   useEffect(() => {
     void loadQueue()
   }, [loadQueue])
+
+  const syncReconcileUrl = useCallback(
+    (
+      patch: {
+        month?: string
+        account?: string | null
+        kind?: ReconciliationKindFilter
+        q?: string | null
+      },
+      mode: 'push' | 'replace',
+    ) => {
+      if (!isActive) {
+        return
+      }
+      const nextMonth = patch.month ?? yearMonth
+      const nextAccount =
+        patch.account !== undefined ? patch.account : filterAccountKey || null
+      const nextKind = patch.kind !== undefined ? patch.kind : filterKind
+      const nextQuery =
+        patch.q !== undefined ? patch.q : filterQuery.trim() || null
+      setSearchParams(
+        (current) =>
+          patchSearchParams(current, {
+            month: nextMonth,
+            account: nextAccount,
+            kind: nextKind || null,
+            q: nextQuery,
+            section: null,
+            tab: null,
+          }),
+        { replace: mode === 'replace' },
+      )
+    },
+    [
+      isActive,
+      yearMonth,
+      filterAccountKey,
+      filterKind,
+      filterQuery,
+      setSearchParams,
+    ],
+  )
+
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current) {
+      syncReconcileUrl({}, 'replace')
+    }
+    wasActiveRef.current = isActive
+  }, [isActive, syncReconcileUrl])
+
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+    const month = readMonthParam(searchParams)
+    if (month && month !== yearMonth) {
+      setYearMonth(month)
+    }
+    setFilterAccountKey(readAccountParam(searchParams) ?? '')
+    setFilterKind(readKindParam(searchParams))
+    const q = readQueryParam(searchParams) ?? ''
+    setFilterQuery(q)
+    setSearchOpen(Boolean(q))
+  }, [searchParams, isActive])
+
+  const changeYearMonth = useCallback(
+    (next: string) => {
+      setYearMonth(next)
+      setFilterAccountKey('')
+      setFilterKind('')
+      setFilterQuery('')
+      setSearchOpen(false)
+      syncReconcileUrl(
+        { month: next, account: null, kind: '', q: null },
+        'push',
+      )
+    },
+    [syncReconcileUrl],
+  )
+
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+    const handle = window.setTimeout(() => {
+      syncReconcileUrl({ q: filterQuery.trim() || null }, 'replace')
+    }, 250)
+    return () => window.clearTimeout(handle)
+  }, [filterQuery, syncReconcileUrl, isActive])
 
   const loadIgnored = useCallback(async () => {
     setIgnoredLoading(true)
@@ -881,7 +1128,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               type="month"
               value={yearMonth}
               disabled={toolbarBusy}
-              onChange={(event) => setYearMonth(event.target.value)}
+              onChange={(event) => changeYearMonth(event.target.value)}
             />
           </label>
           <div className="recon-toolbar-actions">
@@ -970,8 +1217,131 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           </div>
         </article>
       ) : (
+        <>
+          <div className="recon-filters" aria-label="Filtros da fila">
+            <div className="recon-filters-pill">
+              <FilterDropdown
+                label="Conta"
+                value={filterAccountKey}
+                options={accountFilterOptions}
+                disabled={toolbarBusy}
+                searchable
+                searchPlaceholder="Buscar conta (ex.: XP)…"
+                minWidth={280}
+                onChange={(next) => {
+                  setFilterAccountKey(next)
+                  syncReconcileUrl({ account: next || null }, 'push')
+                }}
+              />
+              <FilterDropdown
+                label="Tipo"
+                value={filterKind}
+                options={[
+                  { value: 'bank', label: 'Conta' },
+                  { value: 'credit_purchase', label: 'Cartão' },
+                  { value: 'invoice_payment_candidate', label: 'Fatura' },
+                  { value: 'same_person_transfer', label: 'Transferência' },
+                ]}
+                disabled={toolbarBusy}
+                minWidth={180}
+                onChange={(next) => {
+                  const kind = next as ReconciliationKindFilter
+                  setFilterKind(kind)
+                  syncReconcileUrl({ kind }, 'push')
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              className={`recon-filter-search-btn${searchOpen || filterQuery ? ' is-active' : ''}`}
+              aria-label="Buscar na fila"
+              aria-pressed={searchOpen}
+              disabled={toolbarBusy}
+              onClick={() => setSearchOpen((open) => !open)}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden="true"
+              >
+                <circle
+                  cx="11"
+                  cy="11"
+                  r="6.5"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                />
+                <path
+                  d="M16.2 16.2L20 20"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </div>
+
+          {searchOpen ? (
+            <div className="recon-filter-search">
+              <input
+                type="search"
+                value={filterQuery}
+                disabled={toolbarBusy}
+                placeholder="Buscar descrição, categoria, conta…"
+                autoFocus
+                onChange={(event) => setFilterQuery(event.target.value)}
+              />
+              {filterQuery ? (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => setFilterQuery('')}
+                >
+                  Limpar
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="recon-filter-meta">
+            <span>
+              {filtersActive
+                ? `${filteredItems.length} de ${queue.items.length} lançamento${queue.items.length === 1 ? '' : 's'}`
+                : `${queue.items.length} lançamento${queue.items.length === 1 ? '' : 's'} na fila`}
+            </span>
+            {filtersActive ? (
+              <button
+                type="button"
+                className="warning-link"
+                disabled={toolbarBusy}
+                onClick={() => {
+                  setFilterAccountKey('')
+                  setFilterKind('')
+                  setFilterQuery('')
+                  setSearchOpen(false)
+                  syncReconcileUrl(
+                    { account: null, kind: '', q: null },
+                    'push',
+                  )
+                }}
+              >
+                Limpar filtros
+              </button>
+            ) : null}
+          </div>
+
+          {filteredItems.length === 0 ? (
+            <article className="panel settings-panel">
+              <div className="empty">
+                <strong>Nenhum lançamento com esses filtros</strong>
+                <p>Ajuste Conta, Tipo ou a busca para ver a fila.</p>
+              </div>
+            </article>
+          ) : (
         <ul className={`recon-list ${anyBusy && !createItem ? 'is-busy' : ''}`}>
-          {queue.items.map((item) => {
+          {filteredItems.map((item) => {
             const cardAction =
               action?.pluggyId === item.pluggy.id &&
               action.kind !== 'import' &&
@@ -1003,6 +1373,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       <span className={`badge ${kindClass(item.pluggy.kind)}`}>
                         {kindLabel(item.pluggy.kind)}
                       </span>
+                      {isForeignCurrency(item.pluggy.currencyCode) ? (
+                        <span className="badge kind-transfer">
+                          {(item.pluggy.currencyCode ?? '').toUpperCase()}
+                        </span>
+                      ) : null}
                       {installmentLabel(item.pluggy) ? (
                         <span className="badge kind-installment">
                           {installmentLabel(item.pluggy)}
@@ -1019,13 +1394,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                         : ''}
                     </span>
                   </div>
-                  <div
-                    className={`recon-amount ${
-                      item.pluggy.organizzeAmountCents < 0 ? 'neg' : 'pos'
-                    }`}
-                  >
-                    {formatBRL(item.pluggy.organizzeAmountCents)}
-                  </div>
+                  <PluggyAmountDisplay pluggy={item.pluggy} />
                 </div>
 
                 {isSamePersonTransfer(item.pluggy) ? (
@@ -1126,6 +1495,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
             )
           })}
         </ul>
+          )}
+        </>
       )}
       </PullToRefresh>
 
@@ -1159,7 +1530,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
             </div>
           ) : null}
 
-          <div className="settings-form modal-body">
+            <div className="settings-form modal-body">
               <div className="create-destination" aria-label="Resumo do lançamento">
                 <div className="create-destination-row">
                   <span>Valor</span>
@@ -1168,9 +1539,29 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       createItem.pluggy.organizzeAmountCents < 0 ? 'neg' : 'pos'
                     }
                   >
-                    {formatBRL(createItem.pluggy.organizzeAmountCents)}
+                    {isForeignCurrency(createItem.pluggy.currencyCode)
+                      ? formatMoney(
+                          createItem.pluggy.amountCents,
+                          createItem.pluggy.currencyCode ?? 'USD',
+                        )
+                      : formatBRL(createItem.pluggy.organizzeAmountCents)}
                   </strong>
                 </div>
+                {isForeignCurrency(createItem.pluggy.currencyCode) &&
+                createItem.pluggy.amountInAccountCurrencyCents != null ? (
+                  <div className="create-destination-row">
+                    <span>Em reais (fatura)</span>
+                    <strong
+                      className={
+                        createItem.pluggy.organizzeAmountCents < 0
+                          ? 'neg'
+                          : 'pos'
+                      }
+                    >
+                      {formatBRL(createItem.pluggy.organizzeAmountCents)}
+                    </strong>
+                  </div>
+                ) : null}
                 <div className="create-destination-row">
                   <span>Data</span>
                   <strong>{formatDateBR(createItem.pluggy.date)}</strong>

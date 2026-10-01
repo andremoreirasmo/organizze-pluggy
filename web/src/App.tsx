@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 import { BalancesView } from './BalancesView'
 import { BottomSheet } from './BottomSheet'
 import { DashboardView } from './DashboardView'
 import { PullToRefresh } from './PullToRefresh'
 import { ReconciliationView } from './ReconciliationView'
+import {
+  pathForView,
+  patchSearchParams,
+  readSettingsTabParam,
+  ROUTES,
+  viewFromPath,
+  type AppView,
+  type SettingsTab,
+} from './routes'
 
 type OrganizzeAccount = {
   id: number
@@ -105,7 +115,16 @@ type OrganizzeCreditCard = {
   archived: boolean
 }
 
-type View = 'reconcile' | 'balances' | 'dashboard' | 'settings'
+type View = AppView
+
+function initialVisitedViews(view: View): Record<View, boolean> {
+  return {
+    reconcile: true,
+    balances: view === 'balances',
+    dashboard: view === 'dashboard',
+    settings: view === 'settings',
+  }
+}
 
 type GoogleCredentialResponse = {
   credential?: string
@@ -384,13 +403,19 @@ function BankAvatar({
 }
 
 function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const view = viewFromPath(location.pathname)
+  const settingsSection =
+    readSettingsTabParam(searchParams) ?? ('banks' as SettingsTab)
+
   const [sessionEmail, setSessionEmail] = useState<string | null>(null)
   const [authReady, setAuthReady] = useState(false)
   const [googleClientId, setGoogleClientId] = useState<string | null>(null)
   const [googleButtonHost, setGoogleButtonHost] =
     useState<HTMLDivElement | null>(null)
   const [authenticated, setAuthenticated] = useState(false)
-  const [view, setView] = useState<View>('reconcile')
   const [error, setError] = useState<string | null>(null)
   const [organizzeAccounts, setOrganizzeAccounts] = useState<
     OrganizzeAccount[]
@@ -409,9 +434,6 @@ function App() {
     useState<InstitutionOption | null>(null)
   const [iconPickerForId, setIconPickerForId] = useState<string | null>(null)
   const [addConnectionOpen, setAddConnectionOpen] = useState(false)
-  const [settingsSection, setSettingsSection] = useState<
-    'banks' | 'accounts' | 'balances'
-  >('banks')
   const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [expandedMapChildren, setExpandedMapChildren] = useState<
@@ -426,12 +448,9 @@ function App() {
   >([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [visitedViews, setVisitedViews] = useState<Record<View, boolean>>({
-    reconcile: true,
-    balances: false,
-    dashboard: false,
-    settings: false,
-  })
+  const [visitedViews, setVisitedViews] = useState<Record<View, boolean>>(() =>
+    initialVisitedViews(viewFromPath(window.location.pathname)),
+  )
   const scrollByViewRef = useRef<Record<View, number>>({
     reconcile: 0,
     balances: 0,
@@ -474,10 +493,10 @@ function App() {
         dashboard: false,
         settings: false,
       })
-      setView('reconcile')
+      navigate(ROUTES.reconcile, { replace: true })
     })
     return () => setUnauthorizedHandler(null)
-  }, [])
+  }, [navigate])
 
   const flatPluggyAccounts = useMemo(
     () =>
@@ -560,9 +579,18 @@ function App() {
       setSessionEmail(email)
       await loadHomeData()
       setAuthenticated(true)
-      setView('reconcile')
+      const nextView = viewFromPath(window.location.pathname)
+      setVisitedViews((current) =>
+        current[nextView] ? current : { ...current, [nextView]: true },
+      )
+      if (
+        window.location.pathname === '/' ||
+        window.location.pathname === ''
+      ) {
+        navigate(ROUTES.reconcile, { replace: true })
+      }
     },
-    [loadHomeData],
+    [loadHomeData, navigate],
   )
 
   useEffect(() => {
@@ -696,64 +724,91 @@ function App() {
     return () => window.clearTimeout(handle)
   }, [authenticated, view, institutionQuery, loadInstitutions])
 
+  const loadSettingsData = useCallback(async () => {
+    const [, , settings, cards, investments] = await Promise.all([
+      loadConfig(),
+      loadInstitutions(),
+      apiFetch<AppSettings>('/api/settings'),
+      apiFetch<OrganizzeCreditCard[]>('/api/organizze/credit-cards'),
+      apiFetch<PluggyInvestment[]>('/api/pluggy/investments'),
+      loadHomeData(),
+    ])
+    setOrganizzeCreditCards(cards)
+    setAppSettings(settings)
+    setPluggyInvestments(investments)
+  }, [loadConfig, loadInstitutions, loadHomeData])
+
+  const navigateToView = useCallback(
+    (next: View) => {
+      setError(null)
+      navigate(pathForView(next))
+    },
+    [navigate],
+  )
+
   const openSettings = useCallback(async () => {
-    setError(null)
-    setView('settings')
+    navigateToView('settings')
     if (appSettings) {
       return
     }
     setLoading(true)
     try {
-      const [, , settings, cards, investments] = await Promise.all([
-        loadConfig(),
-        loadInstitutions(),
-        apiFetch<AppSettings>('/api/settings'),
-        apiFetch<OrganizzeCreditCard[]>('/api/organizze/credit-cards'),
-        apiFetch<PluggyInvestment[]>('/api/pluggy/investments'),
-        loadHomeData(),
-      ])
-      setOrganizzeCreditCards(cards)
-      setAppSettings(settings)
-      setPluggyInvestments(investments)
+      await loadSettingsData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar config')
     } finally {
       setLoading(false)
     }
-  }, [appSettings, loadConfig, loadInstitutions, loadHomeData])
+  }, [appSettings, loadSettingsData, navigateToView])
 
   const refreshSettings = useCallback(async () => {
     setError(null)
     setLoading(true)
     try {
-      const [, , settings, cards, investments] = await Promise.all([
-        loadConfig(),
-        loadInstitutions(),
-        apiFetch<AppSettings>('/api/settings'),
-        apiFetch<OrganizzeCreditCard[]>('/api/organizze/credit-cards'),
-        apiFetch<PluggyInvestment[]>('/api/pluggy/investments'),
-        loadHomeData(),
-      ])
-      setOrganizzeCreditCards(cards)
-      setAppSettings(settings)
-      setPluggyInvestments(investments)
+      await loadSettingsData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar config')
       throw err
     } finally {
       setLoading(false)
     }
-  }, [loadConfig, loadInstitutions, loadHomeData])
+  }, [loadSettingsData])
+
+  useEffect(() => {
+    if (!authenticated || view !== 'settings' || appSettings) {
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    void loadSettingsData()
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : 'Erro ao carregar config',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [authenticated, view, appSettings, loadSettingsData])
 
   const openBalances = useCallback(() => {
-    setError(null)
-    setView('balances')
-  }, [])
+    navigateToView('balances')
+  }, [navigateToView])
 
   const openDashboard = useCallback(() => {
-    setError(null)
-    setView('dashboard')
-  }, [])
+    navigateToView('dashboard')
+  }, [navigateToView])
+
+  const openReconcile = useCallback(() => {
+    navigateToView('reconcile')
+  }, [navigateToView])
 
   const authenticatedFetch = useCallback(
     <T,>(path: string, init?: RequestInit) => apiFetch<T>(path, init),
@@ -1036,10 +1091,18 @@ function App() {
     [appSettings, saveAccountMap],
   )
 
-  const openReconcile = useCallback(() => {
-    setError(null)
-    setView('reconcile')
-  }, [])
+  const selectSettingsSection = useCallback(
+    (tab: SettingsTab) => {
+      setSearchParams(
+        (current) =>
+          patchSearchParams(current, {
+            tab: tab === 'banks' ? null : tab,
+          }),
+        { replace: false },
+      )
+    },
+    [setSearchParams],
+  )
 
   const addConnection = useCallback(async () => {
     if (!newItemId.trim()) {
@@ -1170,12 +1233,12 @@ function App() {
       dashboard: false,
       settings: false,
     })
-    setView('reconcile')
     setError(null)
+    navigate(ROUTES.reconcile, { replace: true })
     window.setTimeout(() => {
       suppressUnauthorizedHandler = false
     }, 1000)
-  }, [])
+  }, [navigate])
 
   if (!authReady) {
     return (
@@ -1226,6 +1289,13 @@ function App() {
         </div>
       </div>
     )
+  }
+
+  if (
+    location.pathname === '/' ||
+    location.pathname === ''
+  ) {
+    return <Navigate to={ROUTES.reconcile} replace />
   }
 
   return (
@@ -1375,7 +1445,7 @@ function App() {
                   role="tab"
                   aria-selected={settingsSection === 'banks'}
                   className={settingsSection === 'banks' ? 'active' : ''}
-                  onClick={() => setSettingsSection('banks')}
+                  onClick={() => selectSettingsSection('banks')}
                 >
                   Bancos
                   <span className="settings-tab-count">{settingsStats.banks}</span>
@@ -1385,7 +1455,7 @@ function App() {
                   role="tab"
                   aria-selected={settingsSection === 'accounts'}
                   className={settingsSection === 'accounts' ? 'active' : ''}
-                  onClick={() => setSettingsSection('accounts')}
+                  onClick={() => selectSettingsSection('accounts')}
                 >
                   Contas
                   {settingsStats.pending > 0 ? (
@@ -1403,7 +1473,7 @@ function App() {
                   role="tab"
                   aria-selected={settingsSection === 'balances'}
                   className={settingsSection === 'balances' ? 'active' : ''}
-                  onClick={() => setSettingsSection('balances')}
+                  onClick={() => selectSettingsSection('balances')}
                 >
                   Saldos
                   <span className="settings-tab-count">

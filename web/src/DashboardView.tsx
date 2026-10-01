@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import {
   InstallmentsPanel,
   type InstallmentsOverviewResponse,
@@ -8,6 +9,13 @@ import {
   type InvestmentsOverviewResponse,
 } from './InvestmentsPanel'
 import { PullToRefresh } from './PullToRefresh'
+import {
+  patchSearchParams,
+  readMonthParam,
+  readSectionParam,
+  ROUTES,
+  type ReportSection,
+} from './routes'
 
 type ApiFetch = <T>(path: string, init?: RequestInit) => Promise<T>
 
@@ -16,7 +24,7 @@ type Props = {
   onError: (message: string | null) => void
 }
 
-type Section = 'installments' | 'investments'
+type Section = ReportSection
 
 function currentMonthKeySaoPaulo(): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -46,14 +54,78 @@ function formatMonthTitle(monthKey: string): string {
 }
 
 export function DashboardView({ apiFetch, onError }: Props) {
-  const [section, setSection] = useState<Section>('installments')
+  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const isActive = location.pathname === ROUTES.dashboard
+  const wasActiveRef = useRef(isActive)
+
+  const [section, setSection] = useState<Section>(
+    () =>
+      readSectionParam(new URLSearchParams(window.location.search)) ??
+      'installments',
+  )
   const [loading, setLoading] = useState(false)
-  const [focusMonth, setFocusMonth] = useState(currentMonthKeySaoPaulo)
+  const [focusMonth, setFocusMonth] = useState(
+    () =>
+      readMonthParam(new URLSearchParams(window.location.search)) ??
+      currentMonthKeySaoPaulo(),
+  )
   const [installments, setInstallments] =
     useState<InstallmentsOverviewResponse | null>(null)
   const [investments, setInvestments] =
     useState<InvestmentsOverviewResponse | null>(null)
   const failedMonthRef = useRef<string | null>(null)
+
+  const syncDashboardUrl = useCallback(
+    (
+      patch: { month?: string; section?: Section },
+      mode: 'push' | 'replace',
+    ) => {
+      if (!isActive) {
+        return
+      }
+      const nextMonth = patch.month ?? focusMonth
+      const nextSection = patch.section ?? section
+      setSearchParams(
+        (current) =>
+          patchSearchParams(current, {
+            month: nextMonth,
+            section: nextSection === 'installments' ? null : nextSection,
+            account: null,
+            kind: null,
+            q: null,
+            tab: null,
+          }),
+        { replace: mode === 'replace' },
+      )
+    },
+    [isActive, focusMonth, section, setSearchParams],
+  )
+
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current) {
+      syncDashboardUrl({}, 'replace')
+    }
+    wasActiveRef.current = isActive
+  }, [isActive, syncDashboardUrl])
+
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+    const nextSection = readSectionParam(searchParams) ?? 'installments'
+    setSection(nextSection)
+    const month = readMonthParam(searchParams)
+    if (month) {
+      setFocusMonth((current) => {
+        if (current === month) {
+          return current
+        }
+        failedMonthRef.current = null
+        return month
+      })
+    }
+  }, [searchParams, isActive])
 
   const loadInstallments = useCallback(
     async (month: string) => {
@@ -95,15 +167,27 @@ export function DashboardView({ apiFetch, onError }: Props) {
     }
   }, [apiFetch, onError])
 
-  const changeFocusMonth = useCallback((month: string) => {
-    setFocusMonth((current) => {
-      if (current === month) {
-        return current
-      }
-      failedMonthRef.current = null
-      return month
-    })
-  }, [])
+  const changeFocusMonth = useCallback(
+    (month: string) => {
+      setFocusMonth((current) => {
+        if (current === month) {
+          return current
+        }
+        failedMonthRef.current = null
+        return month
+      })
+      syncDashboardUrl({ month }, 'push')
+    },
+    [syncDashboardUrl],
+  )
+
+  const changeSection = useCallback(
+    (next: Section) => {
+      setSection(next)
+      syncDashboardUrl({ section: next }, 'push')
+    },
+    [syncDashboardUrl],
+  )
 
   const ignorePurchase = useCallback(
     async (ignoreKey: string) => {
@@ -185,98 +269,100 @@ export function DashboardView({ apiFetch, onError }: Props) {
   return (
     <section className="dashboard reports">
       <PullToRefresh onRefresh={refresh} disabled={loading}>
-      <div className="reports-shell">
-        <header className="reports-header">
-          <div className="reports-header-top">
-            <h1>Relatórios</h1>
-            <div className="reports-month" aria-label="Mês de referência">
+        <div className="reports-shell">
+          <header className="reports-header">
+            <div className="reports-header-top">
+              <h1>Relatórios</h1>
+              <div className="reports-month" aria-label="Mês de referência">
+                <button
+                  type="button"
+                  className="reports-month-arrow"
+                  disabled={loading}
+                  aria-label="Mês anterior"
+                  onClick={() =>
+                    changeFocusMonth(shiftMonthKey(focusMonth, -1))
+                  }
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  className="reports-month-label"
+                  disabled={loading}
+                  title="Ir para o mês atual"
+                  onClick={() => changeFocusMonth(currentMonthKeySaoPaulo())}
+                >
+                  {monthTitle}
+                </button>
+                <button
+                  type="button"
+                  className="reports-month-arrow"
+                  disabled={loading}
+                  aria-label="Próximo mês"
+                  onClick={() =>
+                    changeFocusMonth(shiftMonthKey(focusMonth, 1))
+                  }
+                >
+                  ›
+                </button>
+              </div>
               <button
                 type="button"
-                className="reports-month-arrow"
+                className="reports-refresh"
                 disabled={loading}
-                aria-label="Mês anterior"
-                onClick={() =>
-                  changeFocusMonth(shiftMonthKey(focusMonth, -1))
-                }
+                onClick={() => void refresh()}
               >
-                ‹
-              </button>
-              <button
-                type="button"
-                className="reports-month-label"
-                disabled={loading}
-                title="Ir para o mês atual"
-                onClick={() => changeFocusMonth(currentMonthKeySaoPaulo())}
-              >
-                {monthTitle}
-              </button>
-              <button
-                type="button"
-                className="reports-month-arrow"
-                disabled={loading}
-                aria-label="Próximo mês"
-                onClick={() => changeFocusMonth(shiftMonthKey(focusMonth, 1))}
-              >
-                ›
+                {loading ? 'Atualizando…' : 'Atualizar'}
               </button>
             </div>
-            <button
-              type="button"
-              className="reports-refresh"
-              disabled={loading}
-              onClick={() => void refresh()}
+
+            <div
+              className="reports-tabs"
+              role="tablist"
+              aria-label="Seção de relatórios"
             >
-              {loading ? 'Atualizando…' : 'Atualizar'}
-            </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={section === 'installments'}
+                className={section === 'installments' ? 'active' : ''}
+                onClick={() => changeSection('installments')}
+              >
+                Parcelas
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={section === 'investments'}
+                className={section === 'investments' ? 'active' : ''}
+                onClick={() => changeSection('investments')}
+              >
+                Investimentos
+              </button>
+            </div>
+          </header>
+
+          <div className="reports-body">
+            {loading &&
+            ((section === 'installments' && !installments) ||
+              (section === 'investments' && !investments)) ? (
+              <p className="dash-empty">Carregando…</p>
+            ) : null}
+
+            {section === 'installments' && installments ? (
+              <InstallmentsPanel
+                data={installments}
+                loading={loading}
+                onFocusMonthChange={changeFocusMonth}
+                onIgnorePurchase={ignorePurchase}
+                onUnignorePurchase={unignorePurchase}
+              />
+            ) : null}
+            {section === 'investments' && investments ? (
+              <InvestmentsPanel data={investments} />
+            ) : null}
           </div>
-
-          <div
-            className="reports-tabs"
-            role="tablist"
-            aria-label="Seção de relatórios"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={section === 'installments'}
-              className={section === 'installments' ? 'active' : ''}
-              onClick={() => setSection('installments')}
-            >
-              Parcelas
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={section === 'investments'}
-              className={section === 'investments' ? 'active' : ''}
-              onClick={() => setSection('investments')}
-            >
-              Investimentos
-            </button>
-          </div>
-        </header>
-
-        <div className="reports-body">
-          {loading &&
-          ((section === 'installments' && !installments) ||
-            (section === 'investments' && !investments)) ? (
-            <p className="dash-empty">Carregando…</p>
-          ) : null}
-
-          {section === 'installments' && installments ? (
-            <InstallmentsPanel
-              data={installments}
-              loading={loading}
-              onFocusMonthChange={changeFocusMonth}
-              onIgnorePurchase={ignorePurchase}
-              onUnignorePurchase={unignorePurchase}
-            />
-          ) : null}
-          {section === 'investments' && investments ? (
-            <InvestmentsPanel data={investments} />
-          ) : null}
         </div>
-      </div>
       </PullToRefresh>
     </section>
   )

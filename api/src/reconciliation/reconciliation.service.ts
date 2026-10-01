@@ -1045,6 +1045,16 @@ export class ReconciliationService {
     }
 
     const amountCents = toAmountCents(amount);
+    const amountInAccountCurrency =
+      typeof tx.amountInAccountCurrency === 'number'
+        ? tx.amountInAccountCurrency
+        : null;
+    const amountInAccountCurrencyCents =
+      amountInAccountCurrency === null
+        ? null
+        : toAmountCents(amountInAccountCurrency);
+    const accountAmountCents = amountInAccountCurrencyCents ?? amountCents;
+    const currencyCode = tx.currencyCode ?? null;
     const owner = account.owner?.trim() || null;
 
     return {
@@ -1053,9 +1063,11 @@ export class ReconciliationService {
       description,
       amount,
       amountCents,
-      organizzeAmountCents: toOrganizzeAmountCents(amountCents, kind),
+      organizzeAmountCents: toOrganizzeAmountCents(accountAmountCents, kind),
       date: date.slice(0, 10),
-      currencyCode: tx.currencyCode ?? null,
+      currencyCode,
+      amountInAccountCurrency,
+      amountInAccountCurrencyCents,
       type: tx.type ?? null,
       operationType,
       category,

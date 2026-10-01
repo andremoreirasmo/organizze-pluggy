@@ -24,6 +24,9 @@ export type QueuePluggyTransaction = {
   organizzeAmountCents: number;
   date: string;
   currencyCode: string | null;
+  /** Present when Pluggy returned a conversion into the account currency (usually BRL). */
+  amountInAccountCurrency: number | null;
+  amountInAccountCurrencyCents: number | null;
   type: string | null;
   operationType: string | null;
   category: string | null;
