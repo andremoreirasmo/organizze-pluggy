@@ -1,0 +1,51 @@
+:root {
+  --oz-green: #129e3f;
+  --oz-green-dark: #0d772f;
+  --oz-green-deep: #004f26;
+  --oz-green-soft: #8fe6ab;
+  --oz-green-tint: rgba(18, 158, 63, 0.1);
+  --oz-bg: #f2f4ef;
+  --oz-bg-warm: #fefdf9;
+  --oz-surface: #ffffff;
+  --oz-ink: #201e1f;
+  --oz-muted: #858782;
+  --oz-border: #dbded8;
+  --oz-danger: #c62828;
+  --oz-radius: 12px;
+  --oz-radius-sm: 8px;
+  --oz-shadow: 0 8px 24px rgba(32, 30, 31, 0.06);
+  --oz-font: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--oz-font);
+  color: var(--oz-ink);
+  background: var(--oz-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+}

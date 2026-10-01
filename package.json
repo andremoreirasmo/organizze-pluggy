@@ -1,0 +1,17 @@
+{
+  "name": "organizze-pluggy",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently -n api,web -c green,cyan \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "npm --prefix api run start:dev",
+    "dev:web": "npm --prefix web run dev",
+    "build": "npm --prefix web run build && npm --prefix api run build",
+    "start": "npm --prefix api run start:prod",
+    "prisma:generate": "npm --prefix api exec prisma generate",
+    "prisma:migrate": "npm --prefix api exec prisma migrate dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

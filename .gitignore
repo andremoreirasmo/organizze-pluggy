@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+coverage/
+.DS_Store
+web/dist/
+api/dist/
+.idea/
+.vscode/
+*.tsbuildinfo
+.prisma/

@@ -1,0 +1,232 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InstitutionBrandService } from '../institution/institution-brand.service';
+import {
+  CreateInvoicePaymentPayload,
+  CreateOrganizzeTransactionPayload,
+  OrganizzeAccount,
+  OrganizzeCategory,
+  OrganizzeCreditCard,
+  OrganizzeInvoice,
+  OrganizzeTransaction,
+  UpdateOrganizzeTransactionPayload,
+} from './organizze.types';
+import {
+  appendPluggyMarker,
+  extractPluggyIds,
+  notesContainPluggyId,
+} from './pluggy-notes';
+
+@Injectable()
+export class OrganizzeService {
+  private readonly logger = new Logger(OrganizzeService.name);
+  private readonly baseUrl = 'https://api.organizze.com.br/rest/v2';
+
+  constructor(
+    private readonly config: ConfigService,
+    private readonly institutionBrand: InstitutionBrandService,
+  ) {}
+
+  private authHeader(): string {
+    const email = this.config.getOrThrow<string>('ORGANIZZE_EMAIL');
+    const token = this.config.getOrThrow<string>('ORGANIZZE_API_TOKEN');
+    return `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
+  }
+
+  private async request<T>(
+    path: string,
+    init?: RequestInit & { query?: Record<string, string | number | undefined> },
+  ): Promise<T> {
+    const url = new URL(`${this.baseUrl}${path}`);
+    if (init?.query) {
+      for (const [key, value] of Object.entries(init.query)) {
+        if (value !== undefined && value !== null && value !== '') {
+          url.searchParams.set(key, String(value));
+        }
+      }
+    }
+
+    const { query: _query, ...fetchInit } = init ?? {};
+    const response = await fetch(url, {
+      ...fetchInit,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
+        Authorization: this.authHeader(),
+        'User-Agent': this.config.getOrThrow<string>('ORGANIZZE_USER_AGENT'),
+        ...(fetchInit.headers ?? {}),
+      },
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      this.logger.error(`Organizze ${path} failed: ${response.status} ${body}`);
+      throw new Error(`Organizze API error ${response.status}: ${body}`);
+    }
+
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    return (await response.json()) as T;
+  }
+
+  async listAccounts(options?: {
+    includeArchived?: boolean;
+  }): Promise<OrganizzeAccount[]> {
+    const accounts = await this.request<OrganizzeAccount[]>('/accounts');
+    const filtered = accounts.filter((account) => {
+      if (!options?.includeArchived && account.archived) {
+        return false;
+      }
+      // Cash/wallet accounts are not useful for Open Finance reconciliation
+      if (this.isCashWalletAccount(account.name)) {
+        return false;
+      }
+      return true;
+    });
+
+    return Promise.all(
+      filtered.map(async (account) => {
+        try {
+          const brand = await this.institutionBrand.resolveFromAccountName(
+            account.name,
+          );
+          return {
+            ...account,
+            institutionName: brand.name,
+            institutionImageUrl: brand.imageUrl,
+            institutionPrimaryColor: brand.primaryColor,
+          };
+        } catch (error) {
+          this.logger.warn(
+            `Could not resolve brand for Organizze account ${account.name}: ${String(error)}`,
+          );
+          return {
+            ...account,
+            institutionName: null,
+            institutionImageUrl: null,
+            institutionPrimaryColor: null,
+          };
+        }
+      }),
+    );
+  }
+
+  private isCashWalletAccount(name: string): boolean {
+    const normalized = name
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .trim();
+    return /^(carteira|dinheiro|cash|wallet|especie)$/.test(normalized);
+  }
+
+  async listCategories(options?: {
+    includeArchived?: boolean;
+  }): Promise<OrganizzeCategory[]> {
+    const categories = await this.request<OrganizzeCategory[]>('/categories');
+    if (options?.includeArchived) {
+      return categories;
+    }
+    return categories.filter((category) => !this.isArchivedFlag(category.archived));
+  }
+
+  private isArchivedFlag(value: unknown): boolean {
+    return value === true || value === 1 || value === '1' || value === 'true';
+  }
+
+  listTransactions(params: {
+    startDate: string;
+    endDate: string;
+    accountId?: number;
+  }): Promise<OrganizzeTransaction[]> {
+    return this.request<OrganizzeTransaction[]>('/transactions', {
+      query: {
+        start_date: params.startDate,
+        end_date: params.endDate,
+        account_id: params.accountId,
+      },
+    });
+  }
+
+  getTransaction(id: number): Promise<OrganizzeTransaction> {
+    return this.request<OrganizzeTransaction>(`/transactions/${id}`);
+  }
+
+  async listCreditCards(options?: {
+    includeArchived?: boolean;
+  }): Promise<OrganizzeCreditCard[]> {
+    const cards = await this.request<OrganizzeCreditCard[]>('/credit_cards');
+    if (options?.includeArchived) {
+      return cards;
+    }
+    return cards.filter((card) => !card.archived);
+  }
+
+  listInvoices(creditCardId: number): Promise<OrganizzeInvoice[]> {
+    return this.request<OrganizzeInvoice[]>(
+      `/credit_cards/${creditCardId}/invoices`,
+    );
+  }
+
+  getInvoice(
+    creditCardId: number,
+    invoiceId: number,
+  ): Promise<OrganizzeInvoice> {
+    return this.request<OrganizzeInvoice>(
+      `/credit_cards/${creditCardId}/invoices/${invoiceId}`,
+    );
+  }
+
+  createTransaction(
+    payload: CreateOrganizzeTransactionPayload,
+  ): Promise<OrganizzeTransaction> {
+    return this.request<OrganizzeTransaction>('/transactions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  updateTransaction(
+    id: number,
+    payload: UpdateOrganizzeTransactionPayload,
+  ): Promise<OrganizzeTransaction> {
+    return this.request<OrganizzeTransaction>(`/transactions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  createInvoicePayment(
+    creditCardId: number,
+    invoiceId: number,
+    payload: CreateInvoicePaymentPayload,
+  ): Promise<OrganizzeTransaction> {
+    return this.request<OrganizzeTransaction>(
+      `/credit_cards/${creditCardId}/invoices/${invoiceId}/payments`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    );
+  }
+
+  appendPluggyMarker(
+    notes: string | null | undefined,
+    pluggyTransactionId: string,
+  ): string {
+    return appendPluggyMarker(notes, pluggyTransactionId);
+  }
+
+  extractPluggyIds(notes: string | null | undefined): string[] {
+    return extractPluggyIds(notes);
+  }
+
+  notesContainPluggyId(
+    notes: string | null | undefined,
+    pluggyTransactionId: string,
+  ): boolean {
+    return notesContainPluggyId(notes, pluggyTransactionId);
+  }
+}

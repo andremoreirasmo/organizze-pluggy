@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Setting {
+  id        String   @id @default("default")
+  data      Json
+  updatedAt DateTime @updatedAt
+}
+
+model PluggyItem {
+  id                    String   @id @default(cuid())
+  itemId                String   @unique
+  /// Optional label set by the user (overrides institution/connector name in UI)
+  customName            String?
+  connectorId           Int?
+  connectorName         String?
+  connectorImageUrl     String?
+  connectorPrimaryColor String?
+  connectorType         String?
+  /// Real bank inferred from accounts when connector is MeuPluggy
+  institutionName       String?
+  institutionImageUrl   String?
+  institutionPrimaryColor String?
+  institutionCompeCode  String?
+  status                String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model ReviewDecision {
+  id                  String             @id @default(cuid())
+  pluggyTransactionId String             @unique
+  providerId          String?
+  decision            ReviewDecisionType
+  notes               String?
+  /// Snapshot of the Pluggy tx at ignore/link time (for ignored list UX)
+  snapshot            Json?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+}
+
+enum ReviewDecisionType {
+  IGNORED
+  LINKED
+  IMPORTED
+  INVOICE_PAYMENT
+}
