@@ -1,7 +1,18 @@
 export type ReconciliationKind =
   | 'bank'
   | 'credit_purchase'
-  | 'invoice_payment_candidate';
+  | 'invoice_payment_candidate'
+  | 'same_person_transfer';
+
+export type TransferCounterpartHint = {
+  pluggyId: string;
+  accountName: string;
+  accountNickname: string | null;
+  accountNumberLast4: string | null;
+  mappedOrganizzeTargetId: number;
+  organizzeAmountCents: number;
+  date: string;
+};
 
 export type QueuePluggyTransaction = {
   id: string;
@@ -32,6 +43,8 @@ export type QueuePluggyTransaction = {
   totalInstallments: number | null;
   purchaseDate: string | null;
   totalPurchaseAmount: number | null;
+  /** Opposite Open Finance leg when both sides are in the queue. */
+  transferCounterpart: TransferCounterpartHint | null;
 };
 
 export type MatchCandidate = {
@@ -93,6 +106,26 @@ export function daysBetween(a: string, b: string): number {
 
 const INVOICE_PAYMENT_DESCRIPTION_RE =
   /pagamento\s+d[eo]\s+fatura|pagto\.?\s*fatura|pag\.?\s*fatura|pagamento.*fatura/i;
+
+const SAME_PERSON_TRANSFER_RE =
+  /same\s*person\s*transfer|transfer[eê]ncia\s+entre\s+contas|transferencia\s+mesma\s+titularidade|same.?person/i;
+
+export function looksLikeSamePersonTransfer(params: {
+  accountType: string | null | undefined;
+  operationType: string | null | undefined;
+  category: string | null | undefined;
+  description: string;
+}): boolean {
+  if ((params.accountType ?? '').toUpperCase() === 'CREDIT') {
+    return false;
+  }
+  const hay = [
+    params.category ?? '',
+    params.operationType ?? '',
+    params.description,
+  ].join(' ');
+  return SAME_PERSON_TRANSFER_RE.test(hay);
+}
 
 export function looksLikeInvoicePayment(params: {
   accountType: string | null | undefined;

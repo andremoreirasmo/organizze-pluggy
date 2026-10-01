@@ -12,7 +12,6 @@ import {
   dedupePluggyAccounts,
   expandPluggyAccountsForMapping,
   parsePluggyAccountMapKey,
-  transactionCardNumber,
   type PluggyAccountView,
 } from './pluggy-accounts';
 
@@ -38,6 +37,28 @@ export type StoredConnection = {
 export type PluggyConnectionSummary = StoredConnection & {
   accounts: PluggyAccountView[];
 };
+
+export type PluggySyncConnectionResult = {
+  id: string;
+  displayName: string;
+  status: string | null;
+  executionStatus: string | null;
+  lastUpdatedAt: string | null;
+  institutionImageUrl: string | null;
+  /** False for sandbox / MeuPluggy items that reject manual update. */
+  updatable: boolean;
+  error: string | null;
+};
+
+const ITEM_SYNC_TERMINAL_STATUSES = new Set([
+  'UPDATED',
+  'OUTDATED',
+  'LOGIN_ERROR',
+  'WAITING_USER_INPUT',
+]);
+
+const ITEM_SYNC_POLL_MS = 2500;
+const ITEM_SYNC_TIMEOUT_MS = 90_000;
 
 type InstitutionSnapshot = {
   connectorId: number | null;
@@ -177,6 +198,83 @@ export class PluggyService {
     return { deleted: true };
   }
 
+  async syncAllConnections(): Promise<{ results: PluggySyncConnectionResult[] }> {
+    this.requireDatabase();
+    const connections = await this.listConfiguredConnections();
+    if (connections.length === 0) {
+      return { results: [] };
+    }
+
+    const results = await Promise.all(
+      connections.map((connection) => this.syncOneConnection(connection)),
+    );
+    return { results };
+  }
+
+  async listConnectionSyncStatuses(): Promise<{
+    results: PluggySyncConnectionResult[];
+  }> {
+    this.requireDatabase();
+    const connections = await this.listConfiguredConnections();
+    const results = await Promise.all(
+      connections.map(async (connection) => {
+        const base: PluggySyncConnectionResult = {
+          id: connection.id,
+          displayName: connection.displayName,
+          status: connection.status,
+          executionStatus: null,
+          lastUpdatedAt: null,
+          institutionImageUrl:
+            connection.institutionImageUrl || connection.connectorImageUrl,
+          updatable: this.isConnectionUpdatable(connection),
+          error: null,
+        };
+        try {
+          const item = await this.client.fetchItem(connection.itemId);
+          const updatable = this.isItemUpdatable(item, connection);
+          await this.prisma.pluggyItem.update({
+            where: { id: connection.id },
+            data: {
+              status: item.status ?? null,
+              connectorName: item.connector?.name ?? undefined,
+              connectorImageUrl: item.connector?.imageUrl ?? undefined,
+            },
+          });
+          return {
+            ...base,
+            status: item.status ?? null,
+            executionStatus: item.executionStatus ?? null,
+            lastUpdatedAt: this.formatItemTimestamp(item.lastUpdatedAt),
+            updatable,
+            error: updatable
+              ? null
+              : 'Conta de teste — sync manual não disponível.',
+          };
+        } catch (error) {
+          this.logger.warn(
+            `Could not fetch sync status for ${connection.itemId}: ${String(error)}`,
+          );
+          return {
+            ...base,
+            error: this.formatUnknownError(error),
+          };
+        }
+      }),
+    );
+    return { results };
+  }
+
+  async syncConnection(id: string): Promise<PluggySyncConnectionResult> {
+    this.requireDatabase();
+    const connection = await this.prisma.pluggyItem.findUnique({
+      where: { id },
+    });
+    if (!connection) {
+      throw new NotFoundException('Connection not found');
+    }
+    return this.syncOneConnection(this.toStoredConnection(connection));
+  }
+
   async listConnections(): Promise<{
     connections: PluggyConnectionSummary[];
   }> {
@@ -235,25 +333,32 @@ export class PluggyService {
       );
     }
 
-    const byId = new Map<string, Account>();
-    for (const connection of stored) {
-      try {
-        const page = await this.client.fetchAccounts(connection.itemId);
-        for (const account of dedupePluggyAccounts(page.results)) {
-          byId.set(account.id, account);
+    const pages = await Promise.all(
+      stored.map(async (connection) => {
+        try {
+          const page = await this.client.fetchAccounts(connection.itemId);
+          return dedupePluggyAccounts(page.results);
+        } catch (error) {
+          this.logger.warn(
+            `Could not list accounts for item ${connection.itemId}: ${String(error)}`,
+          );
+          return [] as Account[];
         }
-      } catch (error) {
-        this.logger.warn(
-          `Could not list accounts for item ${connection.itemId}: ${String(error)}`,
-        );
+      }),
+    );
+
+    const byId = new Map<string, Account>();
+    for (const accounts of pages) {
+      for (const account of accounts) {
+        byId.set(account.id, account);
       }
     }
     return [...byId.values()];
   }
 
   async listAccountViews(): Promise<PluggyAccountView[]> {
-    const { connections } = await this.listConnections();
-    return connections.flatMap((connection) => connection.accounts);
+    const accounts = await this.listAccounts();
+    return expandPluggyAccountsForMapping(accounts);
   }
 
   async listTransactions(params: {
@@ -274,15 +379,16 @@ export class PluggyService {
     accountIds: string[];
     dateFrom?: string;
     dateTo?: string;
+    /** Reuse accounts already loaded by the caller to avoid a second Pluggy round-trip. */
+    accounts?: Account[];
   }): Promise<
     Array<{
       account: Account;
       mapKey: string;
-      cardNumber: string | null;
       transactions: Transaction[];
     }>
   > {
-    const allAccounts = await this.listAccounts();
+    const allAccounts = params.accounts ?? (await this.listAccounts());
     const byId = new Map(allAccounts.map((account) => [account.id, account]));
     const sourceIds = [
       ...new Set(
@@ -291,64 +397,271 @@ export class PluggyService {
         ),
       ),
     ];
-    const results: Array<{
-      account: Account;
-      mapKey: string;
-      cardNumber: string | null;
-      transactions: Transaction[];
-    }> = [];
 
-    const txsBySource = new Map<string, Transaction[]>();
-    for (const sourceAccountId of sourceIds) {
-      const account = byId.get(sourceAccountId);
-      if (!account) {
-        this.logger.warn(
-          `Pluggy account ${sourceAccountId} not found — skipping`,
+    const settled = await Promise.all(
+      sourceIds.map(async (sourceAccountId) => {
+        const account = byId.get(sourceAccountId);
+        if (!account) {
+          this.logger.warn(
+            `Pluggy account ${sourceAccountId} not found — skipping`,
+          );
+          return null;
+        }
+        const transactions = await this.listTransactions({
+          accountId: sourceAccountId,
+          dateFrom: params.dateFrom,
+          dateTo: params.dateTo,
+        });
+        return {
+          account,
+          mapKey: sourceAccountId,
+          transactions,
+        };
+      }),
+    );
+
+    return settled.filter(
+      (
+        entry,
+      ): entry is {
+        account: Account;
+        mapKey: string;
+        transactions: Transaction[];
+      } => entry !== null,
+    );
+  }
+
+  private async syncOneConnection(
+    connection: StoredConnection,
+  ): Promise<PluggySyncConnectionResult> {
+    const base: PluggySyncConnectionResult = {
+      id: connection.id,
+      displayName: connection.displayName,
+      status: connection.status,
+      executionStatus: null,
+      lastUpdatedAt: null,
+      institutionImageUrl:
+        connection.institutionImageUrl || connection.connectorImageUrl,
+      updatable: this.isConnectionUpdatable(connection),
+      error: null,
+    };
+
+    try {
+      const before = await this.client.fetchItem(connection.itemId);
+      const updatable = this.isItemUpdatable(before, connection);
+      base.updatable = updatable;
+
+      if (!updatable) {
+        return {
+          ...base,
+          status: before.status ?? null,
+          executionStatus: before.executionStatus ?? null,
+          lastUpdatedAt: this.formatItemTimestamp(before.lastUpdatedAt),
+          updatable: false,
+          error: 'Conta de teste — sync manual não disponível.',
+        };
+      }
+
+      const beforeUpdatedAt = this.formatItemTimestamp(before.lastUpdatedAt);
+
+      let item =
+        before.status === 'UPDATING'
+          ? before
+          : await this.triggerItemUpdate(connection.itemId);
+
+      item = await this.pollItemUntilTerminal(connection.itemId, item);
+      // Re-fetch so lastUpdatedAt reflects the finished execution.
+      item = await this.client.fetchItem(connection.itemId);
+
+      await this.prisma.pluggyItem.update({
+        where: { id: connection.id },
+        data: {
+          status: item.status ?? null,
+          connectorId: item.connector?.id ?? undefined,
+          connectorName: item.connector?.name ?? undefined,
+          connectorImageUrl: item.connector?.imageUrl ?? undefined,
+          connectorPrimaryColor: this.normalizeColor(
+            item.connector?.primaryColor,
+          ),
+          connectorType: item.connector?.type ?? undefined,
+        },
+      });
+
+      const lastUpdatedAt =
+        this.formatItemTimestamp(item.lastUpdatedAt) ??
+        (item.status === 'UPDATED' ? new Date().toISOString() : null);
+
+      const unchanged =
+        item.status === 'UPDATED' &&
+        beforeUpdatedAt !== null &&
+        lastUpdatedAt === beforeUpdatedAt;
+
+      const error =
+        item.status === 'UPDATED'
+          ? unchanged
+            ? 'O banco não aceitou uma nova coleta agora (ainda na sync anterior). Tente em alguns minutos.'
+            : null
+          : item.status === 'OUTDATED'
+            ? 'Sincronização incompleta — tente de novo em instantes.'
+            : item.status === 'LOGIN_ERROR'
+              ? 'Credenciais inválidas — reconecte em Configurações.'
+              : item.status === 'WAITING_USER_INPUT'
+                ? 'Aguardando confirmação no banco ou app.'
+                : 'Sincronização não concluída.';
+
+      return {
+        ...base,
+        status: item.status ?? null,
+        executionStatus: item.executionStatus ?? null,
+        lastUpdatedAt,
+        updatable: true,
+        error,
+      };
+    } catch (error) {
+      const message = this.friendlySyncError(error);
+      this.logger.warn(
+        `Sync failed for item ${connection.itemId}: ${message}`,
+      );
+      return {
+        ...base,
+        error: message,
+      };
+    }
+  }
+
+  private isConnectionUpdatable(connection: StoredConnection): boolean {
+    const name = (connection.connectorName ?? '').toLowerCase();
+    if (name.includes('meupluggy')) {
+      return false;
+    }
+    if (connection.connectorImageUrl?.includes('sandbox.svg')) {
+      return false;
+    }
+    return true;
+  }
+
+  private isItemUpdatable(
+    item: Awaited<ReturnType<PluggyClient['fetchItem']>>,
+    connection: StoredConnection,
+  ): boolean {
+    if (item.connector?.isSandbox) {
+      return false;
+    }
+    const name = (item.connector?.name ?? connection.connectorName ?? '').toLowerCase();
+    if (name.includes('meupluggy')) {
+      return false;
+    }
+    return this.isConnectionUpdatable(connection);
+  }
+
+  /**
+   * pluggy-sdk rejects any PATCH status other than exactly 200 (e.g. 201),
+   * incorrectly rejecting with the *request* body. Treat that as success and
+   * continue from the current item state.
+   */
+  private async triggerItemUpdate(
+    itemId: string,
+  ): Promise<Awaited<ReturnType<PluggyClient['fetchItem']>>> {
+    try {
+      return await this.client.updateItem(itemId);
+    } catch (error) {
+      if (this.isSdkFalseReject(error, itemId)) {
+        this.logger.log(
+          `Pluggy updateItem returned non-200 for ${itemId}; continuing with poll`,
         );
-        continue;
-      }
-      const transactions = await this.listTransactions({
-        accountId: sourceAccountId,
-        dateFrom: params.dateFrom,
-        dateTo: params.dateTo,
-      });
-      txsBySource.set(sourceAccountId, transactions);
-    }
-
-    const hasCardSpecificMap = new Map<string, boolean>();
-    for (const mapKey of params.accountIds) {
-      const parsed = parsePluggyAccountMapKey(mapKey);
-      if (parsed.cardNumber) {
-        hasCardSpecificMap.set(parsed.sourceAccountId, true);
-      }
-    }
-
-    for (const mapKey of params.accountIds) {
-      const parsed = parsePluggyAccountMapKey(mapKey);
-      const account = byId.get(parsed.sourceAccountId);
-      const transactions = txsBySource.get(parsed.sourceAccountId);
-      if (!account || !transactions) {
-        continue;
+        return this.client.fetchItem(itemId);
       }
 
-      const cardSplit = hasCardSpecificMap.get(parsed.sourceAccountId) === true;
-      const filtered = !cardSplit
-        ? transactions
-        : parsed.cardNumber == null
-          ? transactions.filter((tx) => !transactionCardNumber(tx, account))
-          : transactions.filter(
-              (tx) => transactionCardNumber(tx, account) === parsed.cardNumber,
-            );
+      const refreshed = await this.client.fetchItem(itemId);
+      if (refreshed.status === 'UPDATING') {
+        return refreshed;
+      }
 
-      results.push({
-        account,
-        mapKey,
-        cardNumber: parsed.cardNumber,
-        transactions: filtered,
-      });
+      throw error;
+    }
+  }
+
+  private isSdkFalseReject(error: unknown, itemId: string): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+    const record = error as Record<string, unknown>;
+    return (
+      record.id === itemId &&
+      Object.prototype.hasOwnProperty.call(record, 'parameters')
+    );
+  }
+
+  private friendlySyncError(error: unknown): string {
+    const raw = this.formatUnknownError(error);
+    if (/meupluggy item can'?t be updated/i.test(raw)) {
+      return 'Conta de teste — sync manual não disponível.';
+    }
+    return raw;
+  }
+
+  private formatUnknownError(error: unknown): string {
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+    if (typeof error === 'string' && error.trim()) {
+      return error.trim();
+    }
+    if (error && typeof error === 'object') {
+      const record = error as Record<string, unknown>;
+      for (const key of ['message', 'error', 'code', 'description'] as const) {
+        const value = record[key];
+        if (typeof value === 'string' && value.trim()) {
+          return value.trim();
+        }
+        if (value && typeof value === 'object') {
+          const nested = value as Record<string, unknown>;
+          if (typeof nested.message === 'string' && nested.message.trim()) {
+            return nested.message.trim();
+          }
+        }
+      }
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return 'Falha ao sincronizar com o banco';
+      }
+    }
+    return 'Falha ao sincronizar com o banco';
+  }
+
+  private async pollItemUntilTerminal(
+    itemId: string,
+    initial: Awaited<ReturnType<PluggyClient['fetchItem']>>,
+  ): Promise<Awaited<ReturnType<PluggyClient['fetchItem']>>> {
+    const started = Date.now();
+    let item = initial;
+
+    while (Date.now() - started < ITEM_SYNC_TIMEOUT_MS) {
+      if (item.status && ITEM_SYNC_TERMINAL_STATUSES.has(item.status)) {
+        return item;
+      }
+      await this.sleep(ITEM_SYNC_POLL_MS);
+      item = await this.client.fetchItem(itemId);
     }
 
-    return results;
+    throw new Error(
+      'Tempo esgotado aguardando o banco (90s). Tente novamente.',
+    );
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private formatItemTimestamp(value: Date | string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    return String(value);
   }
 
   private async buildSnapshot(

@@ -35,6 +35,7 @@ body {
   color: var(--oz-ink);
   background: var(--oz-bg);
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 
 button,

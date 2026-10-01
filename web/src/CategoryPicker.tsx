@@ -22,34 +22,70 @@ type Props = {
 }
 
 const GROUP_ICONS: Record<string, string> = {
+  // Organizze group_ids (expenses)
   food: '🍽️',
-  groceries: '🛒',
-  bars_and_restaurants: '🍻',
+  exp_groceries: '🛒',
+  exp_bars_and_restaurants: '🍻',
+  transportation: '🚌',
   transport: '🚌',
   car: '🚗',
   fuel: '⛽',
-  education: '📚',
-  health: '🩺',
-  home: '🏠',
+  exp_education: '📚',
+  exp_book: '📖',
+  exp_health: '🩺',
+  exp_home: '🏠',
+  exp_apartment: '🏢',
   housing: '🏡',
+  entertainment: '🎮',
   leisure: '🎮',
-  entertainment: '🎬',
-  shopping: '🛍️',
+  exp_shopping: '🛍️',
+  exp_clothing: '👕',
   clothes: '👕',
+  exp_personal_care: '💅',
   personal_care: '💅',
+  exp_pets: '🐾',
   pets: '🐾',
   travel: '✈️',
+  exp_subscriptions_and_services: '🔁',
   subscriptions: '🔁',
   services: '🧰',
   bills: '🧾',
+  exp_taxes: '🏛️',
   taxes: '🏛️',
+  exp_investments: '📈',
   investments: '📈',
+  exp_family_and_children: '👨‍👩‍👧‍👦',
+  exp_people: '👥',
+  exp_gifts_and_donations: '🎁',
+  exp_debts_and_loans: '💳',
+  exp_loans: '💳',
+  loans: '💳',
+  exp_work: '💼',
+  exp_favorite: '⭐',
+  invoice_payment: '💳',
+  other: '🏷️',
+  others: '🏷️',
+  // earnings
   salary: '💼',
+  ear_group: '💰',
+  ear_currency: '💵',
+  earning_investments: '📈',
+  other_earnings: '💰',
   earnings: '💰',
   income: '💰',
+  // transfers / misc
+  transference: '↔️',
   transfer: '↔️',
-  others: '🏷️',
-  other: '🏷️',
+  // legacy/fallback keys
+  groceries: '🛒',
+  bars_and_restaurants: '🍻',
+  education: '📚',
+  health: '🩺',
+  home: '🏠',
+  shopping: '🛍️',
+  family: '👨‍👩‍👧‍👦',
+  people: '👥',
+  gifts: '🎁',
 }
 
 function categoryColor(color: string | number | null | undefined): string {
@@ -68,18 +104,20 @@ function categoryColor(color: string | number | null | undefined): string {
 
 function groupIcon(groupId: string | number | null | undefined): string {
   if (groupId == null) {
-    return '📁'
+    return '🏷️'
   }
   const key = String(groupId).toLowerCase()
   if (GROUP_ICONS[key]) {
     return GROUP_ICONS[key]
   }
-  for (const [group, icon] of Object.entries(GROUP_ICONS)) {
-    if (key.includes(group)) {
-      return icon
-    }
+  // Prefer longer/more specific keys first (exp_family_and_children before family)
+  const matches = Object.entries(GROUP_ICONS)
+    .filter(([group]) => key.includes(group) || group.includes(key))
+    .sort((a, b) => b[0].length - a[0].length)
+  if (matches[0]) {
+    return matches[0][1]
   }
-  return '📁'
+  return '🏷️'
 }
 
 function normalize(value: string): string {

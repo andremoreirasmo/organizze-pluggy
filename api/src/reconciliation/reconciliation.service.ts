@@ -12,7 +12,9 @@ import {
 } from '../organizze/organizze.types';
 import {
   normalizeCardNumber,
+  resolveCardNickname,
   transactionCardNumber,
+  expandPluggyAccountsForMapping,
 } from '../pluggy/pluggy-accounts';
 import { PluggyService } from '../pluggy/pluggy.service';
 import { PrismaService } from '../prisma/prisma.module';
@@ -22,13 +24,16 @@ import {
   ActiveAccountMap,
   isActiveAccountMap,
 } from '../settings/settings.types';
+import { startPerf } from '../common/perf';
 import {
   MatchCandidate,
   QueuePluggyTransaction,
   ReconciliationKind,
   ReconciliationQueueResponse,
+  TransferCounterpartHint,
   daysBetween,
   looksLikeInvoicePayment,
+  looksLikeSamePersonTransfer,
   parseDateOnly,
   scoreMatch,
   toAmountCents,
@@ -67,16 +72,20 @@ export class ReconciliationService {
   ) {}
 
   async getQueue(from: string, to: string): Promise<ReconciliationQueueResponse> {
+    const perf = startPerf(`getQueue ${from}..${to}`);
     this.requireDateRange(from, to);
     const appSettings = await this.settings.getSettings();
+    perf.mark('settings');
     const mapsByPluggyId = new Map(
       appSettings.accountMaps.map((map) => [map.pluggyAccountId, map]),
     );
 
-    const allPluggyAccounts = await this.pluggy.listAccountViews().catch((error) => {
+    const pluggyAccounts = await this.pluggy.listAccounts().catch((error) => {
       this.logger.warn(`Could not list Pluggy accounts: ${String(error)}`);
-      return [];
+      return [] as Awaited<ReturnType<PluggyService['listAccounts']>>;
     });
+    const allPluggyAccounts = expandPluggyAccountsForMapping(pluggyAccounts);
+    perf.mark(`listAccounts n=${allPluggyAccounts.length}`);
     const unmappedPluggyAccounts = allPluggyAccounts
       .filter((account) => !mapsByPluggyId.has(account.id))
       .map((account) => ({
@@ -89,6 +98,7 @@ export class ReconciliationService {
     const activeMaps = appSettings.accountMaps.filter(isActiveAccountMap);
     const mappedAccountIds = activeMaps.map((map) => map.pluggyAccountId);
     if (mappedAccountIds.length === 0) {
+      perf.end('no active maps');
       return {
         from,
         to,
@@ -101,6 +111,7 @@ export class ReconciliationService {
       select: { pluggyTransactionId: true },
     });
     const decidedIds = new Set(decided.map((row) => row.pluggyTransactionId));
+    perf.mark(`decided n=${decidedIds.size}`);
 
     const [organizzePool, accountNameById, creditCardNameById, categoryNameById] =
       await Promise.all([
@@ -109,6 +120,9 @@ export class ReconciliationService {
         this.loadOrganizzeCreditCardNames(),
         this.loadOrganizzeCategoryNames(),
       ]);
+    perf.mark(
+      `organizzePool+lookups n=${organizzePool.length} accounts=${accountNameById.size} cards=${creditCardNameById.size} cats=${categoryNameById.size}`,
+    );
     const linkedPluggyIds = new Set<string>();
     for (const tx of organizzePool) {
       for (const id of this.organizze.extractPluggyIds(tx.notes)) {
@@ -120,7 +134,15 @@ export class ReconciliationService {
       accountIds: mappedAccountIds,
       dateFrom: from,
       dateTo: to,
+      accounts: pluggyAccounts,
     });
+    const pluggyTxCount = pluggyBundles.reduce(
+      (sum, bundle) => sum + bundle.transactions.length,
+      0,
+    );
+    perf.mark(
+      `pluggyBundles bundles=${pluggyBundles.length} txs=${pluggyTxCount}`,
+    );
 
     const items: ReconciliationQueueResponse['items'] = [];
 
@@ -135,11 +157,13 @@ export class ReconciliationService {
           continue;
         }
 
+        const cardNumber = transactionCardNumber(tx, bundle.account);
         const queueTx = this.toQueueTransaction(
           tx,
           bundle.account,
           map,
-          bundle.cardNumber ?? transactionCardNumber(tx, bundle.account),
+          cardNumber,
+          resolveCardNickname(map, cardNumber),
         );
         const suggestions = this.buildSuggestions(
           queueTx,
@@ -155,6 +179,8 @@ export class ReconciliationService {
       }
     }
 
+    this.attachTransferCounterparts(items);
+
     items.sort((a, b) => {
       const dateCmp = b.pluggy.date.localeCompare(a.pluggy.date);
       if (dateCmp !== 0) {
@@ -162,6 +188,8 @@ export class ReconciliationService {
       }
       return Math.abs(b.pluggy.amountCents) - Math.abs(a.pluggy.amountCents);
     });
+    perf.mark(`match+sort items=${items.length}`);
+    perf.end();
 
     return {
       from,
@@ -181,10 +209,17 @@ export class ReconciliationService {
       to: string;
     },
   ) {
-    const queueItem = await this.findQueueItem(pluggyTxId, body.from, body.to);
+    const perf = startPerf(`link ${pluggyTxId}`);
+    const queueItem = await this.resolvePendingPluggyTransaction(
+      pluggyTxId,
+      body.from,
+      body.to,
+    );
+    perf.mark('resolvePending');
     const existing = await this.organizze.getTransaction(
       body.organizzeTransactionId,
     );
+    perf.mark('organizze.getTransaction');
 
     const payload: {
       paid: boolean;
@@ -207,12 +242,15 @@ export class ReconciliationService {
       body.organizzeTransactionId,
       payload,
     );
+    perf.mark('organizze.updateTransaction');
 
     await this.upsertDecision(
       pluggyTxId,
       queueItem.pluggy.providerId,
       ReviewDecisionType.LINKED,
     );
+    perf.mark('upsertDecision');
+    perf.end(`ozTx=${body.organizzeTransactionId}`);
 
     return { organizzeTransaction: updated, pluggy: queueItem.pluggy };
   }
@@ -230,7 +268,13 @@ export class ReconciliationService {
       paid?: boolean;
     },
   ) {
-    const queueItem = await this.findQueueItem(pluggyTxId, body.from, body.to);
+    const perf = startPerf(`import ${pluggyTxId}`);
+    const queueItem = await this.resolvePendingPluggyTransaction(
+      pluggyTxId,
+      body.from,
+      body.to,
+    );
+    perf.mark('resolvePending');
     const pluggy = queueItem.pluggy;
     const notes = this.organizze.appendPluggyMarker(null, pluggyTxId);
 
@@ -258,12 +302,15 @@ export class ReconciliationService {
         installment: pluggy.installmentNumber ?? 1,
         total_installments: pluggy.totalInstallments ?? 1,
       });
+      perf.mark('organizze.createTransaction');
 
       await this.upsertDecision(
         pluggyTxId,
         pluggy.providerId,
         ReviewDecisionType.IMPORTED,
       );
+      perf.mark('upsertDecision');
+      perf.end(`creditCardId=${creditCardId}`);
 
       return { organizzeTransaction: created, pluggy };
     }
@@ -288,12 +335,15 @@ export class ReconciliationService {
       category_id: body.categoryId ?? null,
       account_id: accountId,
     });
+    perf.mark('organizze.createTransaction');
 
     await this.upsertDecision(
       pluggyTxId,
       pluggy.providerId,
       ReviewDecisionType.IMPORTED,
     );
+    perf.mark('upsertDecision');
+    perf.end(`accountId=${accountId}`);
 
     return { organizzeTransaction: created, pluggy };
   }
@@ -309,7 +359,11 @@ export class ReconciliationService {
       categoryId?: number | null;
     },
   ) {
-    const queueItem = await this.findQueueItem(pluggyTxId, body.from, body.to);
+    const queueItem = await this.resolvePendingPluggyTransaction(
+      pluggyTxId,
+      body.from,
+      body.to,
+    );
     const pluggy = queueItem.pluggy;
 
     const accountId =
@@ -347,11 +401,154 @@ export class ReconciliationService {
     return { organizzeTransaction: created, pluggy };
   }
 
+  async createAccountTransfer(
+    pluggyTxId: string,
+    body: {
+      from: string;
+      to: string;
+      otherAccountId: number;
+      description?: string;
+      counterpartPluggyId?: string;
+    },
+  ) {
+    const perf = startPerf(`transfer ${pluggyTxId}`);
+    const queueItem = await this.resolvePendingPluggyTransaction(
+      pluggyTxId,
+      body.from,
+      body.to,
+    );
+    perf.mark('resolvePending');
+    const pluggy = queueItem.pluggy;
+
+    if (pluggy.mappedTargetType !== 'account') {
+      throw new BadRequestException(
+        'Transferências entre contas só são permitidas para contas bancárias mapeadas',
+      );
+    }
+
+    if (
+      pluggy.kind !== 'same_person_transfer' &&
+      pluggy.kind !== 'bank'
+    ) {
+      throw new BadRequestException(
+        'Este lançamento não pode ser registrado como transferência entre contas',
+      );
+    }
+
+    const sourceAccountId = pluggy.mappedOrganizzeTargetId;
+    const otherAccountId = body.otherAccountId;
+    if (!otherAccountId || otherAccountId === sourceAccountId) {
+      throw new BadRequestException(
+        'Selecione a outra conta do Organizze para a transferência',
+      );
+    }
+
+    let counterpart: QueuePluggyTransaction | null = null;
+    if (body.counterpartPluggyId) {
+      if (body.counterpartPluggyId === pluggyTxId) {
+        throw new BadRequestException(
+          'counterpartPluggyId não pode ser o mesmo lançamento',
+        );
+      }
+      const counterpartItem = await this.resolvePendingPluggyTransaction(
+        body.counterpartPluggyId,
+        body.from,
+        body.to,
+      );
+      counterpart = counterpartItem.pluggy;
+      if (counterpart.mappedTargetType !== 'account') {
+        throw new BadRequestException(
+          'A contraparte da transferência precisa ser uma conta bancária',
+        );
+      }
+      if (counterpart.mappedOrganizzeTargetId !== otherAccountId) {
+        throw new BadRequestException(
+          'A conta selecionada não corresponde à contraparte Open Finance',
+        );
+      }
+      if (
+        Math.abs(counterpart.organizzeAmountCents) !==
+          Math.abs(pluggy.organizzeAmountCents) ||
+        Math.sign(counterpart.organizzeAmountCents) ===
+          Math.sign(pluggy.organizzeAmountCents)
+      ) {
+        throw new BadRequestException(
+          'A contraparte Open Finance não casa em valor/sinal com este lançamento',
+        );
+      }
+      perf.mark('resolveCounterpart');
+    }
+
+    const amountCents = Math.abs(pluggy.organizzeAmountCents);
+    const debitAccountId =
+      pluggy.organizzeAmountCents < 0 ? sourceAccountId : otherAccountId;
+    const creditAccountId =
+      pluggy.organizzeAmountCents < 0 ? otherAccountId : sourceAccountId;
+
+    let notes = this.organizze.appendPluggyMarker(null, pluggyTxId);
+    if (counterpart) {
+      notes = this.organizze.appendPluggyMarker(notes, counterpart.id);
+    }
+
+    const description =
+      body.description?.trim() ||
+      pluggy.description ||
+      'Transferência entre contas';
+
+    const created = await this.organizze.createTransfer({
+      description,
+      date: pluggy.date.slice(0, 10),
+      amount_cents: amountCents,
+      debit_account_id: debitAccountId,
+      credit_account_id: creditAccountId,
+      paid: true,
+      notes,
+    });
+    perf.mark('organizze.createTransfer');
+
+    const oppositeId = created.oposite_transaction_id ?? null;
+    if (oppositeId) {
+      await this.organizze.updateTransaction(oppositeId, { notes });
+      perf.mark('organizze.updateOppositeNotes');
+    }
+
+    await this.upsertDecision(
+      pluggyTxId,
+      pluggy.providerId,
+      ReviewDecisionType.IMPORTED,
+      counterpart
+        ? `transfer+counterpart:${counterpart.id}`
+        : `transfer→${creditAccountId}`,
+    );
+    if (counterpart) {
+      await this.upsertDecision(
+        counterpart.id,
+        counterpart.providerId,
+        ReviewDecisionType.IMPORTED,
+        `transfer+counterpart:${pluggyTxId}`,
+      );
+    }
+    perf.mark('upsertDecision');
+    perf.end(
+      `debit=${debitAccountId} credit=${creditAccountId} counterpart=${counterpart?.id ?? 'none'}`,
+    );
+
+    return {
+      organizzeTransaction: created,
+      pluggy,
+      counterpartPluggyId: counterpart?.id ?? null,
+    };
+  }
+
   async ignoreTransaction(
     pluggyTxId: string,
     body: { from: string; to: string; notes?: string },
   ) {
-    const queueItem = await this.findQueueItem(pluggyTxId, body.from, body.to);
+    const queueItem = await this.resolvePendingPluggyTransaction(
+      pluggyTxId,
+      body.from,
+      body.to,
+    );
     const snapshot = this.toIgnoredSnapshot(queueItem.pluggy);
     await this.upsertDecision(
       pluggyTxId,
@@ -394,15 +591,79 @@ export class ReconciliationService {
     return { restored: true as const };
   }
 
-  private async findQueueItem(pluggyTxId: string, from: string, to: string) {
-    const queue = await this.getQueue(from, to);
-    const item = queue.items.find((entry) => entry.pluggy.id === pluggyTxId);
-    if (!item) {
+  private async resolvePendingPluggyTransaction(
+    pluggyTxId: string,
+    from: string,
+    to: string,
+  ): Promise<{ pluggy: QueuePluggyTransaction }> {
+    const perf = startPerf(`resolvePending ${pluggyTxId}`);
+    this.requireDateRange(from, to);
+
+    const decided = await this.prisma.reviewDecision.findUnique({
+      where: { pluggyTransactionId: pluggyTxId },
+      select: { pluggyTransactionId: true },
+    });
+    if (decided) {
+      perf.end('already decided');
       throw new NotFoundException(
         `Pluggy transaction ${pluggyTxId} not found in pending queue for ${from}..${to}`,
       );
     }
-    return item;
+    perf.mark('decision check');
+
+    const appSettings = await this.settings.getSettings();
+    const activeMaps = appSettings.accountMaps.filter(isActiveAccountMap);
+    if (activeMaps.length === 0) {
+      perf.end('no active maps');
+      throw new NotFoundException(
+        `Pluggy transaction ${pluggyTxId} not found in pending queue for ${from}..${to}`,
+      );
+    }
+    const mapsByPluggyId = new Map(
+      activeMaps.map((map) => [map.pluggyAccountId, map]),
+    );
+    perf.mark('settings');
+
+    const accounts = await this.pluggy.listAccounts();
+    perf.mark(`accounts n=${accounts.length}`);
+
+    const bundles = await this.pluggy.listTransactionsForAccounts({
+      accountIds: activeMaps.map((map) => map.pluggyAccountId),
+      dateFrom: from,
+      dateTo: to,
+      accounts,
+    });
+    const txCount = bundles.reduce(
+      (sum, bundle) => sum + bundle.transactions.length,
+      0,
+    );
+    perf.mark(`pluggyBundles bundles=${bundles.length} txs=${txCount}`);
+
+    for (const bundle of bundles) {
+      const map = mapsByPluggyId.get(bundle.mapKey);
+      if (!map) {
+        continue;
+      }
+      const tx = bundle.transactions.find((entry) => entry.id === pluggyTxId);
+      if (!tx) {
+        continue;
+      }
+      const cardNumber = transactionCardNumber(tx, bundle.account);
+      const pluggy = this.toQueueTransaction(
+        tx,
+        bundle.account,
+        map,
+        cardNumber,
+        resolveCardNickname(map, cardNumber),
+      );
+      perf.end('found');
+      return { pluggy };
+    }
+
+    perf.end('not found');
+    throw new NotFoundException(
+      `Pluggy transaction ${pluggyTxId} not found in pending queue for ${from}..${to}`,
+    );
   }
 
   private async upsertDecision(
@@ -484,6 +745,7 @@ export class ReconciliationService {
       kind:
         data.kind === 'credit_purchase' ||
         data.kind === 'invoice_payment_candidate' ||
+        data.kind === 'same_person_transfer' ||
         data.kind === 'bank'
           ? data.kind
           : 'bank',
@@ -580,20 +842,25 @@ export class ReconciliationService {
           .map((map) => map.organizzeTargetId),
       ),
     ];
-    for (const accountId of accountIds) {
-      try {
-        const txs = await this.organizze.listTransactions({
-          startDate: from,
-          endDate: to,
-          accountId,
-        });
-        for (const tx of txs) {
-          byId.set(tx.id, tx);
+    const accountBatches = await Promise.all(
+      accountIds.map(async (accountId) => {
+        try {
+          return await this.organizze.listTransactions({
+            startDate: from,
+            endDate: to,
+            accountId,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Could not list Organizze account ${accountId}: ${String(error)}`,
+          );
+          return [] as OrganizzeTransaction[];
         }
-      } catch (error) {
-        this.logger.warn(
-          `Could not list Organizze account ${accountId}: ${String(error)}`,
-        );
+      }),
+    );
+    for (const txs of accountBatches) {
+      for (const tx of txs) {
+        byId.set(tx.id, tx);
       }
     }
 
@@ -605,56 +872,73 @@ export class ReconciliationService {
       ),
     ];
 
-    for (const creditCardId of creditCardIds) {
-      try {
-        const invoices = await this.organizze.listInvoices(creditCardId);
-        const relevant = invoices
-          .filter(
-            (invoice) =>
-              this.invoiceOverlapsPeriod(
-                invoice.starting_date,
-                invoice.closing_date,
-                searchFrom,
-                searchTo,
-              ) ||
-              this.invoiceOverlapsPeriod(
-                invoice.date,
-                invoice.date,
-                searchFrom,
-                searchTo,
-              ),
-          )
-          .sort((a, b) => b.date.localeCompare(a.date));
+    const invoiceJobs = await Promise.all(
+      creditCardIds.map(async (creditCardId) => {
+        try {
+          const invoices = await this.organizze.listInvoices(creditCardId);
+          const relevant = invoices
+            .filter(
+              (invoice) =>
+                this.invoiceOverlapsPeriod(
+                  invoice.starting_date,
+                  invoice.closing_date,
+                  searchFrom,
+                  searchTo,
+                ) ||
+                this.invoiceOverlapsPeriod(
+                  invoice.date,
+                  invoice.date,
+                  searchFrom,
+                  searchTo,
+                ),
+            )
+            .sort((a, b) => b.date.localeCompare(a.date));
 
-        // Also include nearest invoices around the period (installments may
-        // sit on adjacent bills depending on closing day).
-        const extras = invoices
-          .filter((invoice) => !relevant.some((item) => item.id === invoice.id))
-          .sort((a, b) => b.date.localeCompare(a.date))
-          .slice(0, 4);
+          // Also include nearest invoices around the period (installments may
+          // sit on adjacent bills depending on closing day).
+          const extras = invoices
+            .filter(
+              (invoice) => !relevant.some((item) => item.id === invoice.id),
+            )
+            .sort((a, b) => b.date.localeCompare(a.date))
+            .slice(0, 4);
 
-        for (const invoice of [...relevant, ...extras].slice(0, 12)) {
-          try {
-            const detail = await this.organizze.getInvoice(
-              creditCardId,
-              invoice.id,
-            );
-            for (const tx of detail.transactions ?? []) {
-              byId.set(tx.id, tx);
-            }
-            for (const tx of detail.payments ?? []) {
-              byId.set(tx.id, tx);
-            }
-          } catch (error) {
-            this.logger.warn(
-              `Could not load invoice ${invoice.id} for card ${creditCardId}: ${String(error)}`,
-            );
-          }
+          return [...relevant, ...extras].slice(0, 12).map((invoice) => ({
+            creditCardId,
+            invoiceId: invoice.id,
+          }));
+        } catch (error) {
+          this.logger.warn(
+            `Could not list invoices for card ${creditCardId}: ${String(error)}`,
+          );
+          return [] as Array<{ creditCardId: number; invoiceId: number }>;
         }
-      } catch (error) {
-        this.logger.warn(
-          `Could not list invoices for card ${creditCardId}: ${String(error)}`,
-        );
+      }),
+    );
+
+    const invoiceTargets = invoiceJobs.flat();
+    const invoiceDetails = await Promise.all(
+      invoiceTargets.map(async ({ creditCardId, invoiceId }) => {
+        try {
+          return await this.organizze.getInvoice(creditCardId, invoiceId);
+        } catch (error) {
+          this.logger.warn(
+            `Could not load invoice ${invoiceId} for card ${creditCardId}: ${String(error)}`,
+          );
+          return null;
+        }
+      }),
+    );
+
+    for (const detail of invoiceDetails) {
+      if (!detail) {
+        continue;
+      }
+      for (const tx of detail.transactions ?? []) {
+        byId.set(tx.id, tx);
+      }
+      for (const tx of detail.payments ?? []) {
+        byId.set(tx.id, tx);
       }
     }
 
@@ -709,6 +993,7 @@ export class ReconciliationService {
     account: Account,
     map: ActiveAccountMap,
     cardNumber?: string | null,
+    accountNickname?: string | null,
   ): QueuePluggyTransaction {
     const description =
       tx.description ?? tx.merchant?.name ?? tx.category ?? 'Sem descrição';
@@ -736,8 +1021,18 @@ export class ReconciliationService {
       cardNumber ?? transactionCardNumber(tx, account);
 
     let kind: ReconciliationKind = 'bank';
+    const category = tx.category ?? null;
     if ((accountType ?? '').toUpperCase() === 'CREDIT') {
       kind = 'credit_purchase';
+    } else if (
+      looksLikeSamePersonTransfer({
+        accountType,
+        operationType,
+        category,
+        description,
+      })
+    ) {
+      kind = 'same_person_transfer';
     } else if (
       looksLikeInvoicePayment({
         accountType,
@@ -763,7 +1058,7 @@ export class ReconciliationService {
       currencyCode: tx.currencyCode ?? null,
       type: tx.type ?? null,
       operationType,
-      category: tx.category ?? null,
+      category,
       accountId: account.id,
       accountName: account.name,
       accountType,
@@ -773,12 +1068,71 @@ export class ReconciliationService {
       mappedOrganizzeTargetId: map.organizzeTargetId,
       accountNumberLast4: this.extractAccountLast4(account, resolvedCardNumber),
       accountOwner: owner,
-      accountNickname: map.nickname ?? null,
+      accountNickname: accountNickname ?? resolveCardNickname(map, resolvedCardNumber),
       installmentNumber,
       totalInstallments,
       purchaseDate,
       totalPurchaseAmount,
+      transferCounterpart: null,
     };
+  }
+
+  private attachTransferCounterparts(
+    items: ReconciliationQueueResponse['items'],
+  ): void {
+    const transfers = items.filter(
+      (item) =>
+        item.pluggy.kind === 'same_person_transfer' &&
+        item.pluggy.mappedTargetType === 'account',
+    );
+
+    for (let i = 0; i < transfers.length; i += 1) {
+      const item = transfers[i];
+      if (item.pluggy.transferCounterpart) {
+        continue;
+      }
+
+      const absAmount = Math.abs(item.pluggy.organizzeAmountCents);
+      const sign = Math.sign(item.pluggy.organizzeAmountCents);
+
+      for (let j = i + 1; j < transfers.length; j += 1) {
+        const other = transfers[j];
+        if (other.pluggy.transferCounterpart) {
+          continue;
+        }
+        if (
+          other.pluggy.mappedOrganizzeTargetId ===
+          item.pluggy.mappedOrganizzeTargetId
+        ) {
+          continue;
+        }
+        if (Math.abs(other.pluggy.organizzeAmountCents) !== absAmount) {
+          continue;
+        }
+        if (Math.sign(other.pluggy.organizzeAmountCents) === sign) {
+          continue;
+        }
+        if (daysBetween(item.pluggy.date, other.pluggy.date) > 1) {
+          continue;
+        }
+
+        const toHint = (
+          source: QueuePluggyTransaction,
+        ): TransferCounterpartHint => ({
+          pluggyId: source.id,
+          accountName: source.accountName,
+          accountNickname: source.accountNickname,
+          accountNumberLast4: source.accountNumberLast4,
+          mappedOrganizzeTargetId: source.mappedOrganizzeTargetId,
+          organizzeAmountCents: source.organizzeAmountCents,
+          date: source.date,
+        });
+
+        item.pluggy.transferCounterpart = toHint(other.pluggy);
+        other.pluggy.transferCounterpart = toHint(item.pluggy);
+        break;
+      }
+    }
   }
 
   private buildImportDescription(

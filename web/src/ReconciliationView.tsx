@@ -11,6 +11,17 @@ export type ReconciliationKind =
   | 'bank'
   | 'credit_purchase'
   | 'invoice_payment_candidate'
+  | 'same_person_transfer'
+
+export type TransferCounterpartHint = {
+  pluggyId: string
+  accountName: string
+  accountNickname: string | null
+  accountNumberLast4: string | null
+  mappedOrganizzeTargetId: number
+  organizzeAmountCents: number
+  date: string
+}
 
 export type MatchCandidate = {
   organizzeTransactionId: number
@@ -54,6 +65,7 @@ export type QueuePluggyTransaction = {
   totalInstallments: number | null
   purchaseDate: string | null
   totalPurchaseAmount: number | null
+  transferCounterpart: TransferCounterpartHint | null
 }
 
 export type ReconciliationQueueItem = {
@@ -101,6 +113,12 @@ export type OrganizzeCreditCard = {
   archived: boolean
 }
 
+export type OrganizzeAccount = {
+  id: number
+  name: string
+  archived: boolean
+}
+
 export type OrganizzeInvoice = {
   id: number
   date: string
@@ -113,7 +131,7 @@ export type OrganizzeInvoice = {
 
 type ApiFetch = <T>(path: string, init?: RequestInit) => Promise<T>
 
-type ActionKind = 'link' | 'import' | 'invoice' | 'ignore'
+type ActionKind = 'link' | 'import' | 'invoice' | 'ignore' | 'transfer'
 
 type ActionState = {
   pluggyId: string
@@ -234,6 +252,23 @@ function formatPluggyAccountLabel(pluggy: {
   return parts.join(' · ')
 }
 
+function organizzeDestinationLabel(
+  pluggy: QueuePluggyTransaction,
+  creditCards: OrganizzeCreditCard[],
+  accounts: OrganizzeAccount[],
+): string {
+  if (pluggy.mappedTargetType === 'credit_card') {
+    const card = creditCards.find(
+      (entry) => entry.id === pluggy.mappedOrganizzeTargetId,
+    )
+    return card?.name ?? `Cartão #${pluggy.mappedOrganizzeTargetId}`
+  }
+  const account = accounts.find(
+    (entry) => entry.id === pluggy.mappedOrganizzeTargetId,
+  )
+  return account?.name ?? `Conta #${pluggy.mappedOrganizzeTargetId}`
+}
+
 function formatMonthTitle(yearMonth: string): string {
   const [year, month] = yearMonth.split('-').map(Number)
   if (!year || !month) {
@@ -285,6 +320,7 @@ function pickCurrentInvoice(
 function kindLabel(kind: ReconciliationKind): string {
   if (kind === 'credit_purchase') return 'Cartão'
   if (kind === 'invoice_payment_candidate') return 'Pagamento fatura'
+  if (kind === 'same_person_transfer') return 'Transferência'
   return 'Conta'
 }
 
@@ -303,7 +339,29 @@ function installmentLabel(tx: QueuePluggyTransaction): string | null {
 function kindClass(kind: ReconciliationKind): string {
   if (kind === 'credit_purchase') return 'kind-credit'
   if (kind === 'invoice_payment_candidate') return 'kind-invoice'
+  if (kind === 'same_person_transfer') return 'kind-transfer'
   return 'kind-bank'
+}
+
+/** Invoice payment only for detected candidates or bank outflows (never income). */
+function canOfferInvoicePayment(pluggy: QueuePluggyTransaction): boolean {
+  if (pluggy.kind === 'invoice_payment_candidate') {
+    return true
+  }
+  return pluggy.kind === 'bank' && pluggy.organizzeAmountCents < 0
+}
+
+function isSamePersonTransfer(pluggy: QueuePluggyTransaction): boolean {
+  return pluggy.kind === 'same_person_transfer'
+}
+
+function formatTransferAccountHint(hint: TransferCounterpartHint): string {
+  const nick = hint.accountNickname?.trim()
+  if (nick) {
+    return nick
+  }
+  const last4 = hint.accountNumberLast4
+  return last4 ? `${hint.accountName} · final ${last4}` : hint.accountName
 }
 
 type Props = {
@@ -319,6 +377,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [categories, setCategories] = useState<OrganizzeCategory[]>([])
   const [creditCards, setCreditCards] = useState<OrganizzeCreditCard[]>([])
+  const [organizzeAccounts, setOrganizzeAccounts] = useState<
+    OrganizzeAccount[]
+  >([])
   const [invoicesByCard, setInvoicesByCard] = useState<
     Record<number, OrganizzeInvoice[]>
   >({})
@@ -333,6 +394,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [importCategoryId, setImportCategoryId] = useState('')
   const [invoiceCardId, setInvoiceCardId] = useState('')
   const [invoiceId, setInvoiceId] = useState('')
+  const [transferOtherAccountId, setTransferOtherAccountId] = useState('')
 
   const range = useMemo(() => monthBounds(yearMonth), [yearMonth])
   const ignoredInMonth = useMemo(
@@ -347,8 +409,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     [ignoredItems, range.from, range.to],
   )
   const anyBusy = action !== null
+  const toolbarBusy = loading || anyBusy
   const modalBusy =
-    action?.kind === 'import' || action?.kind === 'invoice'
+    action?.kind === 'import' ||
+    action?.kind === 'invoice' ||
+    action?.kind === 'transfer'
 
   const createSelectedInvoice = useMemo(() => {
     if (!createItem || createItem.pluggy.kind !== 'credit_purchase' || !invoiceId) {
@@ -359,25 +424,52 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     return invoices.find((invoice) => String(invoice.id) === invoiceId) ?? null
   }, [createItem, invoiceId, invoicesByCard])
 
+  const createOrganizzeDestination = useMemo(() => {
+    if (!createItem) {
+      return null
+    }
+    return organizzeDestinationLabel(
+      createItem.pluggy,
+      creditCards,
+      organizzeAccounts,
+    )
+  }, [createItem, creditCards, organizzeAccounts])
+
+  const transferAccountOptions = useMemo(() => {
+    if (!createItem || !isSamePersonTransfer(createItem.pluggy)) {
+      return []
+    }
+    const sourceId = createItem.pluggy.mappedOrganizzeTargetId
+    return organizzeAccounts.filter(
+      (account) => !account.archived && account.id !== sourceId,
+    )
+  }, [createItem, organizzeAccounts])
+
+  const createIsTransfer = Boolean(
+    createItem && isSamePersonTransfer(createItem.pluggy),
+  )
+
   const loadQueue = useCallback(
     async (options?: { silent?: boolean }) => {
-      onError(null)
       if (!options?.silent) {
+        onError(null)
         setLoading(true)
-        setStatusMessage('Buscando transações Pluggy e Organizze…')
+        setStatusMessage('Carregando fila de conciliação…')
       }
       try {
-        const [queueData, cats, cards, ignored] = await Promise.all([
+        const [queueData, cats, cards, accounts, ignored] = await Promise.all([
           apiFetch<ReconciliationQueueResponse>(
             `/api/reconciliation/queue?from=${range.from}&to=${range.to}`,
           ),
           apiFetch<OrganizzeCategory[]>('/api/organizze/categories'),
           apiFetch<OrganizzeCreditCard[]>('/api/organizze/credit-cards'),
+          apiFetch<OrganizzeAccount[]>('/api/organizze/accounts'),
           apiFetch<{ items: IgnoredItem[] }>('/api/reconciliation/ignored'),
         ])
         setQueue(queueData)
         setCategories(cats)
         setCreditCards(cards)
+        setOrganizzeAccounts(accounts)
         setIgnoredItems(ignored.items)
         if (!options?.silent) {
           setStatusMessage(
@@ -388,7 +480,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         }
       } catch (err) {
         onError(err instanceof Error ? err.message : 'Erro ao carregar fila')
-        setStatusMessage(null)
+        if (!options?.silent) {
+          setStatusMessage(null)
+        }
+        throw err
       } finally {
         if (!options?.silent) {
           setLoading(false)
@@ -469,10 +564,19 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
   const openCreateModal = (item: ReconciliationQueueItem) => {
     setCreateItem(item)
-    setImportDescription(item.pluggy.description)
+    setImportDescription(
+      isSamePersonTransfer(item.pluggy)
+        ? item.pluggy.description || 'Transferência entre contas'
+        : item.pluggy.description,
+    )
     setImportCategoryId('')
     setInvoiceCardId('')
     setInvoiceId('')
+    setTransferOtherAccountId(
+      item.pluggy.transferCounterpart
+        ? String(item.pluggy.transferCounterpart.mappedOrganizzeTargetId)
+        : '',
+    )
     onError(null)
     if (item.pluggy.kind === 'credit_purchase') {
       const cardId = item.pluggy.mappedOrganizzeTargetId
@@ -500,22 +604,26 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setCreateItem(null)
   }
 
-  const removeFromQueue = (pluggyId: string) => {
+  const removeFromQueue = (...pluggyIds: string[]) => {
+    const idSet = new Set(pluggyIds)
     setQueue((current) =>
       current
         ? {
             ...current,
-            items: current.items.filter((entry) => entry.pluggy.id !== pluggyId),
+            items: current.items.filter(
+              (entry) => !idSet.has(entry.pluggy.id),
+            ),
           }
         : current,
     )
   }
 
   const finishAction = async (
-    pluggyId: string,
+    pluggyIds: string | string[],
     successMessage: string,
   ) => {
-    removeFromQueue(pluggyId)
+    const ids = Array.isArray(pluggyIds) ? pluggyIds : [pluggyIds]
+    removeFromQueue(...ids)
     setCreateItem(null)
     setAction(null)
     setStatusMessage(successMessage)
@@ -539,6 +647,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       message: `Vinculando a “${candidate.description}”${parcel} no Organizze…`,
     })
     onError(null)
+    const started = performance.now()
     try {
       await apiFetch(`/api/reconciliation/${item.pluggy.id}/link`, {
         method: 'POST',
@@ -550,11 +659,17 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           syncAmount: false,
         }),
       })
+      console.info(
+        `[perf] link ${item.pluggy.id} client ${Math.round(performance.now() - started)}ms`,
+      )
       await finishAction(
         item.pluggy.id,
         `Vinculado a “${candidate.description}”.`,
       )
     } catch (err) {
+      console.warn(
+        `[perf] link ${item.pluggy.id} failed after ${Math.round(performance.now() - started)}ms`,
+      )
       onError(err instanceof Error ? err.message : 'Erro ao vincular')
       setAction(null)
     }
@@ -573,6 +688,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       message: 'Criando lançamento no Organizze…',
     })
     onError(null)
+    const started = performance.now()
     try {
       const body: Record<string, string | number | boolean> = {
         from: range.from,
@@ -593,8 +709,14 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         method: 'POST',
         body: JSON.stringify(body),
       })
+      console.info(
+        `[perf] import ${item.pluggy.id} client ${Math.round(performance.now() - started)}ms`,
+      )
       await finishAction(item.pluggy.id, 'Lançamento criado no Organizze.')
     } catch (err) {
+      console.warn(
+        `[perf] import ${item.pluggy.id} failed after ${Math.round(performance.now() - started)}ms`,
+      )
       onError(err instanceof Error ? err.message : 'Erro ao criar lançamento')
       setAction(null)
     }
@@ -629,6 +751,81 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       )
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Erro no pagamento de fatura')
+      setAction(null)
+    }
+  }
+
+  const transferTx = async (item: ReconciliationQueueItem) => {
+    if (!transferOtherAccountId) {
+      onError('Selecione a outra conta da transferência')
+      return
+    }
+    const otherAccountId = Number(transferOtherAccountId)
+    const counterpart = item.pluggy.transferCounterpart
+    const useCounterpart =
+      counterpart &&
+      counterpart.mappedOrganizzeTargetId === otherAccountId
+        ? counterpart.pluggyId
+        : undefined
+    const otherName =
+      organizzeAccounts.find((account) => account.id === otherAccountId)
+        ?.name ?? 'conta destino'
+    const sourceName =
+      createOrganizzeDestination ?? formatPluggyAccountLabel(item.pluggy)
+    const fromLabel =
+      item.pluggy.organizzeAmountCents < 0 ? sourceName : otherName
+    const toLabel =
+      item.pluggy.organizzeAmountCents < 0 ? otherName : sourceName
+
+    setAction({
+      pluggyId: item.pluggy.id,
+      kind: 'transfer',
+      candidateId: null,
+      phase: 'working',
+      message: useCounterpart
+        ? `Registrando transferência e mesclando os 2 lados Open Finance…`
+        : `Registrando transferência ${fromLabel} → ${toLabel}…`,
+    })
+    onError(null)
+    const started = performance.now()
+    try {
+      const result = await apiFetch<{
+        counterpartPluggyId: string | null
+      }>(`/api/reconciliation/${item.pluggy.id}/transfer`, {
+        method: 'POST',
+        body: JSON.stringify({
+          from: range.from,
+          to: range.to,
+          otherAccountId,
+          description:
+            importDescription.trim() ||
+            item.pluggy.description ||
+            'Transferência entre contas',
+          ...(useCounterpart
+            ? { counterpartPluggyId: useCounterpart }
+            : {}),
+        }),
+      })
+      console.info(
+        `[perf] transfer ${item.pluggy.id} client ${Math.round(performance.now() - started)}ms`,
+      )
+      const removedIds = [item.pluggy.id]
+      if (result.counterpartPluggyId) {
+        removedIds.push(result.counterpartPluggyId)
+      }
+      await finishAction(
+        removedIds,
+        useCounterpart
+          ? `Transferência criada e os 2 registros Open Finance foram mesclados.`
+          : `Transferência ${fromLabel} → ${toLabel} criada no Organizze.`,
+      )
+    } catch (err) {
+      console.warn(
+        `[perf] transfer ${item.pluggy.id} failed after ${Math.round(performance.now() - started)}ms`,
+      )
+      onError(
+        err instanceof Error ? err.message : 'Erro ao criar transferência',
+      )
       setAction(null)
     }
   }
@@ -677,18 +874,30 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
             <input
               type="month"
               value={yearMonth}
-              disabled={loading || anyBusy}
+              disabled={toolbarBusy}
               onChange={(event) => setYearMonth(event.target.value)}
             />
           </label>
-          <button
-            type="button"
-            className="btn"
-            disabled={loading || anyBusy}
-            onClick={() => void loadQueue()}
-          >
-            {loading ? 'Atualizando…' : 'Atualizar fila'}
-          </button>
+          <div className="recon-toolbar-actions">
+            <button
+              type="button"
+              className="btn"
+              disabled={toolbarBusy}
+              title="Recarrega a fila com os dados já disponíveis"
+              onClick={() => void loadQueue()}
+            >
+              {loading ? 'Atualizando…' : 'Atualizar fila'}
+            </button>
+            <a
+              className="recon-sync-link"
+              href="https://meu.pluggy.ai/connections/"
+              target="_blank"
+              rel="noreferrer"
+              title="Abre o MeuPluggy para atualizar as conexões"
+            >
+              Abrir MeuPluggy
+            </a>
+          </div>
         </div>
       </div>
 
@@ -699,10 +908,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           aria-live="polite"
         >
           {loading || action ? <span className="spinner" aria-hidden /> : null}
-          <span>
-            {action?.message ??
-              (loading ? 'Carregando fila de conciliação…' : statusMessage)}
-          </span>
+          <span>{action?.message ?? statusMessage}</span>
         </div>
       ) : null}
 
@@ -717,7 +923,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           <button
             type="button"
             className="warning-link"
-            disabled={loading || anyBusy}
+            disabled={toolbarBusy}
             onClick={openIgnored}
           >
             Ver e restaurar
@@ -763,7 +969,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
             const cardAction =
               action?.pluggyId === item.pluggy.id &&
               action.kind !== 'import' &&
-              action.kind !== 'invoice'
+              action.kind !== 'invoice' &&
+              action.kind !== 'transfer'
                 ? action
                 : null
             const busy = cardAction !== null
@@ -814,6 +1021,19 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     {formatBRL(item.pluggy.organizzeAmountCents)}
                   </div>
                 </div>
+
+                {isSamePersonTransfer(item.pluggy) ? (
+                  <div className="suggestions transfer-hint">
+                    <div className="suggestions-head">
+                      <strong>Transferência entre contas</strong>
+                      <span>
+                        {item.pluggy.transferCounterpart
+                          ? `Encontramos o outro lado Open Finance (${formatTransferAccountHint(item.pluggy.transferCounterpart)}). Registrar como transferência mescla os 2 registros.`
+                          : 'Mesmo sem o Pix de recebimento na outra conta, você pode registrar a transferência no Organizze e escolher a conta destino. Se o outro lado já foi criado no Organizze, use Vincular abaixo.'}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
 
                 {item.suggestions.length > 0 ? (
                   <div className="suggestions">
@@ -870,11 +1090,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       })}
                     </ul>
                   </div>
-                ) : (
+                ) : !isSamePersonTransfer(item.pluggy) ? (
                   <p className="no-suggestions">
                     Sem sugestões próximas — use Criar lançamento ou Ignorar.
                   </p>
-                )}
+                ) : null}
 
                 <div className="recon-actions">
                   <button
@@ -883,7 +1103,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     disabled={anyBusy}
                     onClick={() => openCreateModal(item)}
                   >
-                    Criar lançamento
+                    {isSamePersonTransfer(item.pluggy)
+                      ? 'Transferir entre contas'
+                      : 'Criar lançamento'}
                   </button>
                   <button
                     type="button"
@@ -919,7 +1141,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 <strong>
                   {action?.kind === 'invoice'
                     ? 'Registrando pagamento…'
-                    : 'Criando lançamento…'}
+                    : action?.kind === 'transfer'
+                      ? 'Registrando transferência…'
+                      : 'Criando lançamento…'}
                 </strong>
                 <p>{action?.message}</p>
               </div>
@@ -927,8 +1151,16 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
             <div className="modal-head">
               <div>
-                <h2 id="create-tx-title">Criar lançamento</h2>
-                <p>Confira destino, valor e data antes de enviar ao Organizze.</p>
+                <h2 id="create-tx-title">
+                  {createIsTransfer
+                    ? 'Transferência entre contas'
+                    : 'Criar lançamento'}
+                </h2>
+                <p>
+                  {createIsTransfer
+                    ? 'Cria uma transferência no Organizze (saída + entrada) e grava o ID Pluggy nas observações.'
+                    : 'Confira destino, valor e data antes de enviar ao Organizze.'}
+                </p>
               </div>
               <button
                 type="button"
@@ -971,20 +1203,62 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   <span>Data</span>
                   <strong>{formatDateBR(createItem.pluggy.date)}</strong>
                 </div>
-                <div className="create-destination-row">
-                  <span>Destino no Organizze</span>
-                  <strong>{formatPluggyAccountLabel(createItem.pluggy)}</strong>
-                </div>
-                {createItem.pluggy.kind === 'credit_purchase' ? (
-                  <div className="create-destination-row">
-                    <span>Fatura</span>
-                    <strong>
-                      {createSelectedInvoice
-                        ? invoiceOptionLabel(createSelectedInvoice).title
-                        : 'Selecionando…'}
-                    </strong>
-                  </div>
-                ) : null}
+                {createIsTransfer ? (
+                  <>
+                    <div className="create-destination-row">
+                      <span>
+                        {createItem.pluggy.organizzeAmountCents < 0
+                          ? 'Conta de origem'
+                          : 'Conta de destino'}
+                      </span>
+                      <strong>{createOrganizzeDestination ?? '—'}</strong>
+                    </div>
+                    <div className="create-destination-row">
+                      <span>Origem Pluggy</span>
+                      <strong>
+                        {formatPluggyAccountLabel(createItem.pluggy)}
+                      </strong>
+                    </div>
+                    {createItem.pluggy.transferCounterpart ? (
+                      <div className="create-destination-row">
+                        <span>Outro lado Open Finance</span>
+                        <strong>
+                          {formatTransferAccountHint(
+                            createItem.pluggy.transferCounterpart,
+                          )}
+                        </strong>
+                      </div>
+                    ) : (
+                      <div className="create-destination-row">
+                        <span>Outro lado Open Finance</span>
+                        <strong>Ainda não apareceu na fila</strong>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="create-destination-row">
+                      <span>Destino no Organizze</span>
+                      <strong>{createOrganizzeDestination ?? '—'}</strong>
+                    </div>
+                    <div className="create-destination-row">
+                      <span>Origem Pluggy</span>
+                      <strong>
+                        {formatPluggyAccountLabel(createItem.pluggy)}
+                      </strong>
+                    </div>
+                    {createItem.pluggy.kind === 'credit_purchase' ? (
+                      <div className="create-destination-row">
+                        <span>Fatura</span>
+                        <strong>
+                          {createSelectedInvoice
+                            ? invoiceOptionLabel(createSelectedInvoice).title
+                            : 'Selecionando…'}
+                        </strong>
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </div>
 
               <label>
@@ -996,74 +1270,99 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 />
               </label>
 
-              <label>
-                Categoria
-                <CategoryPicker
-                  categories={categories}
-                  value={importCategoryId}
-                  amountCents={createItem.pluggy.organizzeAmountCents}
-                  disabled={modalBusy}
-                  onChange={setImportCategoryId}
-                />
-              </label>
-
-              {createItem.pluggy.kind === 'credit_purchase' ? (
+              {createIsTransfer ? (
                 <label>
-                  Fatura do cartão
-                  <InvoicePicker
-                    invoices={
-                      invoicesByCard[
-                        createItem.pluggy.mappedOrganizzeTargetId
-                      ] ?? []
-                    }
-                    value={invoiceId}
+                  {createItem.pluggy.organizzeAmountCents < 0
+                    ? 'Conta de destino'
+                    : 'Conta de origem'}
+                  <select
+                    value={transferOtherAccountId}
                     disabled={modalBusy}
-                    emptyLabel="Carregando fatura…"
-                    onOpen={() =>
-                      void loadInvoices(
-                        createItem.pluggy.mappedOrganizzeTargetId,
-                      )
+                    onChange={(event) =>
+                      setTransferOtherAccountId(event.target.value)
                     }
-                    onChange={setInvoiceId}
-                  />
+                  >
+                    <option value="">Selecione a outra conta…</option>
+                    {transferAccountOptions.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-              ) : null}
-
-              {createItem.pluggy.kind === 'invoice_payment_candidate' ||
-              createItem.pluggy.kind === 'bank' ? (
+              ) : (
                 <>
                   <label>
-                    Cartão (pagamento de fatura)
-                    <CreditCardPicker
-                      cards={creditCards}
-                      value={invoiceCardId}
+                    Categoria
+                    <CategoryPicker
+                      categories={categories}
+                      value={importCategoryId}
+                      amountCents={createItem.pluggy.organizzeAmountCents}
                       disabled={modalBusy}
-                      onChange={(next) => {
-                        setInvoiceCardId(next)
-                        setInvoiceId('')
-                        if (next) {
-                          void loadInvoices(Number(next))
-                        }
-                      }}
+                      onChange={setImportCategoryId}
                     />
                   </label>
-                  {invoiceCardId ? (
+
+                  {createItem.pluggy.kind === 'credit_purchase' ? (
                     <label>
-                      Fatura
+                      Fatura do cartão
                       <InvoicePicker
-                        invoices={invoicesByCard[Number(invoiceCardId)] ?? []}
+                        invoices={
+                          invoicesByCard[
+                            createItem.pluggy.mappedOrganizzeTargetId
+                          ] ?? []
+                        }
                         value={invoiceId}
                         disabled={modalBusy}
-                        emptyLabel="Escolher fatura…"
+                        emptyLabel="Carregando fatura…"
                         onOpen={() =>
-                          void loadInvoices(Number(invoiceCardId))
+                          void loadInvoices(
+                            createItem.pluggy.mappedOrganizzeTargetId,
+                          )
                         }
                         onChange={setInvoiceId}
                       />
                     </label>
                   ) : null}
+
+                  {canOfferInvoicePayment(createItem.pluggy) ? (
+                    <>
+                      <label>
+                        Cartão (pagamento de fatura)
+                        <CreditCardPicker
+                          cards={creditCards}
+                          value={invoiceCardId}
+                          disabled={modalBusy}
+                          onChange={(next) => {
+                            setInvoiceCardId(next)
+                            setInvoiceId('')
+                            if (next) {
+                              void loadInvoices(Number(next))
+                            }
+                          }}
+                        />
+                      </label>
+                      {invoiceCardId ? (
+                        <label>
+                          Fatura
+                          <InvoicePicker
+                            invoices={
+                              invoicesByCard[Number(invoiceCardId)] ?? []
+                            }
+                            value={invoiceId}
+                            disabled={modalBusy}
+                            emptyLabel="Escolher fatura…"
+                            onOpen={() =>
+                              void loadInvoices(Number(invoiceCardId))
+                            }
+                            onChange={setInvoiceId}
+                          />
+                        </label>
+                      ) : null}
+                    </>
+                  ) : null}
                 </>
-              ) : null}
+              )}
 
               <div className="modal-actions">
                 <button
@@ -1074,27 +1373,39 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 >
                   Cancelar
                 </button>
-                {(createItem.pluggy.kind === 'invoice_payment_candidate' ||
-                  createItem.pluggy.kind === 'bank') &&
-                invoiceCardId &&
-                invoiceId ? (
+                {createIsTransfer ? (
                   <button
                     type="button"
                     className="btn"
-                    disabled={modalBusy}
-                    onClick={() => void payInvoice(createItem)}
+                    disabled={modalBusy || !transferOtherAccountId}
+                    onClick={() => void transferTx(createItem)}
                   >
-                    Registrar pagamento de fatura
+                    Registrar transferência
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={modalBusy}
-                  onClick={() => void importTx(createItem)}
-                >
-                  Criar no Organizze
-                </button>
+                ) : (
+                  <>
+                    {canOfferInvoicePayment(createItem.pluggy) &&
+                    invoiceCardId &&
+                    invoiceId ? (
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={modalBusy}
+                        onClick={() => void payInvoice(createItem)}
+                      >
+                        Registrar pagamento de fatura
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={modalBusy}
+                      onClick={() => void importTx(createItem)}
+                    >
+                      Criar no Organizze
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>

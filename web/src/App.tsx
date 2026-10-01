@@ -21,6 +21,7 @@ type PluggyAccount = {
   owner?: string | null
   sourceAccountId?: string
   cardNumber?: string | null
+  additionalCards?: Array<{ number: string }>
   creditData?: {
     disaggregatedCreditLimits?: Array<{
       identificationNumber?: string | null
@@ -60,7 +61,8 @@ type AccountMap = {
   pluggyAccountId: string
   targetType: 'account' | 'credit_card' | 'ignored'
   organizzeTargetId: number
-  nickname: string | null
+  nickname?: string | null
+  cardNicknames?: Record<string, string> | null
 }
 
 type AppSettings = {
@@ -107,72 +109,19 @@ function pluggyAccountLast4(account: PluggyAccount): string | null {
   return null
 }
 
-function formatPluggyMapLabel(
-  account: PluggyAccount,
-  nickname?: string | null,
-): string {
-  const base = nickname?.trim() || account.name
+function formatPluggyMapLabel(account: PluggyAccount): string {
   const last4 = pluggyAccountLast4(account)
+  if (last4 && account.type.toUpperCase() !== 'CREDIT') {
+    return `${account.name} · final ${last4}`
+  }
+  const ownerFirst = account.owner?.trim().split(/\s+/)[0]
+  if (ownerFirst && account.type.toUpperCase() === 'CREDIT') {
+    return account.name
+  }
   if (last4) {
-    return `${base} · final ${last4}`
+    return `${account.name} · final ${last4}`
   }
-  if (!nickname?.trim()) {
-    const ownerFirst = account.owner?.trim().split(/\s+/)[0]
-    if (ownerFirst && account.type.toUpperCase() === 'CREDIT') {
-      return `${base} · ${ownerFirst}`
-    }
-  }
-  return base
-}
-
-/** Move legacy parent-card maps onto `accountId::last4` after additionalCards expansion. */
-function migrateAccountMapsForAdditionalCards(
-  maps: AccountMap[],
-  accounts: Array<PluggyAccount & { connectionName?: string }>,
-): { maps: AccountMap[]; changed: boolean } {
-  const childrenBySource = new Map<string, PluggyAccount[]>()
-  for (const account of accounts) {
-    const source = account.sourceAccountId ?? account.id
-    if (!account.id.includes('::')) {
-      continue
-    }
-    const list = childrenBySource.get(source) ?? []
-    list.push(account)
-    childrenBySource.set(source, list)
-  }
-
-  let changed = false
-  const usedChildIds = new Set(
-    maps.filter((map) => map.pluggyAccountId.includes('::')).map((map) => map.pluggyAccountId),
-  )
-  const nextMaps: AccountMap[] = []
-
-  for (const map of maps) {
-    if (map.pluggyAccountId.includes('::')) {
-      nextMaps.push(map)
-      continue
-    }
-    const children = childrenBySource.get(map.pluggyAccountId) ?? []
-    if (children.length <= 1) {
-      nextMaps.push(map)
-      continue
-    }
-    const primary =
-      children.find((child) => child.cardNumber && child.id.endsWith(`::${child.cardNumber}`)) ??
-      children[0]
-    if (!primary || usedChildIds.has(primary.id)) {
-      nextMaps.push(map)
-      continue
-    }
-    nextMaps.push({
-      ...map,
-      pluggyAccountId: primary.id,
-    })
-    usedChildIds.add(primary.id)
-    changed = true
-  }
-
-  return { maps: nextMaps, changed }
+  return account.name
 }
 
 async function apiFetch<T>(
@@ -408,34 +357,7 @@ function App() {
         loadHomeData(user, password),
       ])
       setOrganizzeCreditCards(cards)
-
-      // loadHomeData updates pluggyConnections asynchronously via setState;
-      // re-fetch connections here for migration with the latest payload.
-      const pluggy = await apiFetch<{ connections: PluggyConnection[] }>(
-        '/api/pluggy/connections',
-        user,
-        password,
-      )
-      setPluggyConnections(pluggy.connections)
-      const flatAccounts = pluggy.connections.flatMap((connection) =>
-        connection.accounts.map((account) => ({
-          ...account,
-          connectionName: connection.displayName,
-        })),
-      )
-      const migrated = migrateAccountMapsForAdditionalCards(
-        settings.accountMaps,
-        flatAccounts,
-      )
-      if (migrated.changed) {
-        const updated = await apiFetch<AppSettings>('/api/settings', user, password, {
-          method: 'PUT',
-          body: JSON.stringify({ accountMaps: migrated.maps }),
-        })
-        setAppSettings(updated)
-      } else {
-        setAppSettings(settings)
-      }
+      setAppSettings(settings)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar config')
     } finally {
@@ -455,6 +377,7 @@ function App() {
       targetType: 'account' | 'credit_card' | 'ignored' | '',
       organizzeTargetId: number | '',
       nickname?: string | null,
+      cardNicknames?: Record<string, string> | null,
     ) => {
       if (!appSettings) {
         return
@@ -471,6 +394,10 @@ function App() {
               ? nickname.trim().slice(0, 40)
               : null
             : (existing?.nickname ?? null)
+        const nextCardNicknames =
+          cardNicknames !== undefined
+            ? cardNicknames
+            : (existing?.cardNicknames ?? null)
         const nextMaps = appSettings.accountMaps.filter(
           (map) => map.pluggyAccountId !== pluggyAccountId,
         )
@@ -480,6 +407,7 @@ function App() {
             targetType: 'ignored',
             organizzeTargetId: 0,
             nickname: nextNickname,
+            cardNicknames: nextCardNicknames,
           })
         } else if (targetType && organizzeTargetId !== '') {
           nextMaps.push({
@@ -487,6 +415,7 @@ function App() {
             targetType,
             organizzeTargetId: Number(organizzeTargetId),
             nickname: nextNickname,
+            cardNicknames: nextCardNicknames,
           })
         }
         const updated = await apiFetch<AppSettings>('/api/settings', user, password, {
@@ -526,6 +455,47 @@ function App() {
         current.targetType,
         current.targetType === 'ignored' ? 0 : current.organizzeTargetId,
         next || null,
+      )
+    },
+    [appSettings, saveAccountMap],
+  )
+
+  const saveCardNickname = useCallback(
+    async (pluggyAccountId: string, cardNumber: string, nickname: string) => {
+      if (!appSettings) {
+        return
+      }
+      const current = appSettings.accountMaps.find(
+        (map) => map.pluggyAccountId === pluggyAccountId,
+      )
+      if (!current) {
+        return
+      }
+      const digits = cardNumber.replace(/\D/g, '')
+      const last4 =
+        digits.length >= 4 ? digits.slice(-4) : digits || null
+      if (!last4) {
+        return
+      }
+      const next = nickname.trim().slice(0, 40)
+      const previous = current.cardNicknames?.[last4] ?? ''
+      if (next === previous) {
+        return
+      }
+      const nextCardNicknames: Record<string, string> = {
+        ...(current.cardNicknames ?? {}),
+      }
+      if (next) {
+        nextCardNicknames[last4] = next
+      } else {
+        delete nextCardNicknames[last4]
+      }
+      await saveAccountMap(
+        pluggyAccountId,
+        current.targetType,
+        current.targetType === 'ignored' ? 0 : current.organizzeTargetId,
+        current.nickname ?? null,
+        Object.keys(nextCardNicknames).length > 0 ? nextCardNicknames : null,
       )
     },
     [appSettings, saveAccountMap],
@@ -725,14 +695,16 @@ function App() {
             className={`btn ghost ${view === 'reconcile' ? 'active-nav' : ''}`}
             onClick={openReconcile}
           >
-            Conciliação
+            <span className="nav-label-full">Conciliação</span>
+            <span className="nav-label-short">Fila</span>
           </button>
           <button
             type="button"
             className={`btn ghost ${view === 'settings' ? 'active-nav' : ''}`}
             onClick={() => void openSettings()}
           >
-            Configurações
+            <span className="nav-label-full">Configurações</span>
+            <span className="nav-label-short">Config</span>
           </button>
           <button type="button" className="btn ghost" onClick={logout}>
             Sair
@@ -766,7 +738,7 @@ function App() {
               <div className="panel-head">
                 <div>
                   <h2>Bancos salvos</h2>
-                  <p>{configConnections.length} conexão(ões) no Neon</p>
+                  <p>{configConnections.length} conexão(ões) salva(s)</p>
                 </div>
                 <button
                   type="button"
@@ -1026,9 +998,9 @@ function App() {
                 <div>
                   <h2>Mapeamento de contas</h2>
                   <p>
-                    Associe cada conta/cartão Pluggy ao Organizze. Use um
-                    apelido para diferenciar cartões iguais, e Ignorar para
-                    ocultar contas fora da conciliação.
+                    Mapeie a conta/cartão pai no Organizze. Cartões físicos
+                    vinculados aparecem abaixo só para apelido.
+                    Use Ignorar para ocultar contas fora da conciliação.
                   </p>
                 </div>
               </div>
@@ -1051,128 +1023,193 @@ function App() {
                       )
                       const targetType = current?.targetType ?? ''
                       const targetId = current?.organizzeTargetId ?? ''
+                      const isCredit =
+                        account.type.toUpperCase() === 'CREDIT'
+                      const childCards = account.additionalCards ?? []
+                      const hasChildCards =
+                        isCredit && childCards.length > 0
                       return (
                         <li key={account.id} className="config-row map-row">
-                          <div className="account-meta">
-                            <strong>
-                              {formatPluggyMapLabel(account, current?.nickname)}
-                            </strong>
-                            <span>
-                              {account.connectionName} · {account.type}
-                              {account.subtype ? `/${account.subtype}` : ''}
-                            </span>
-                          </div>
-                          <div className="map-controls">
-                            <select
-                              value={targetType}
-                              disabled={saving}
-                              onChange={(event) => {
-                                const nextType = event.target.value as
-                                  | 'account'
-                                  | 'credit_card'
-                                  | 'ignored'
-                                  | ''
-                                if (!nextType) {
-                                  void saveAccountMap(account.id, '', '')
-                                  return
-                                }
-                                if (nextType === 'ignored') {
-                                  void saveAccountMap(account.id, 'ignored', 0)
-                                  return
-                                }
-                                const defaultId =
-                                  nextType === 'account'
-                                    ? (organizzeAccounts[0]?.id ?? '')
-                                    : (organizzeCreditCards[0]?.id ?? '')
-                                void saveAccountMap(
-                                  account.id,
-                                  nextType,
-                                  defaultId,
-                                )
-                              }}
-                            >
-                              <option value="">Sem mapeamento</option>
-                              <option value="account">Conta Organizze</option>
-                              <option value="credit_card">
-                                Cartão Organizze
-                              </option>
-                              <option value="ignored">Ignorar</option>
-                            </select>
-                            {targetType === 'ignored' ? (
-                              <span className="map-ignored-hint">
-                                Fora da fila e do alerta
+                          <div className="map-parent">
+                            <div className="account-meta">
+                              <strong>{formatPluggyMapLabel(account)}</strong>
+                              <span>
+                                {account.connectionName} · {account.type}
+                                {account.subtype ? `/${account.subtype}` : ''}
+                                {hasChildCards
+                                  ? ` · ${childCards.length} cartões`
+                                  : ''}
                               </span>
-                            ) : null}
-                            {targetType === 'account' ? (
+                            </div>
+                            <div className="map-controls">
                               <select
-                                value={targetId}
+                                value={targetType}
                                 disabled={saving}
-                                onChange={(event) =>
+                                onChange={(event) => {
+                                  const nextType = event.target.value as
+                                    | 'account'
+                                    | 'credit_card'
+                                    | 'ignored'
+                                    | ''
+                                  if (!nextType) {
+                                    void saveAccountMap(account.id, '', '')
+                                    return
+                                  }
+                                  if (nextType === 'ignored') {
+                                    void saveAccountMap(
+                                      account.id,
+                                      'ignored',
+                                      0,
+                                    )
+                                    return
+                                  }
+                                  const defaultId =
+                                    nextType === 'account'
+                                      ? (organizzeAccounts[0]?.id ?? '')
+                                      : (organizzeCreditCards[0]?.id ?? '')
                                   void saveAccountMap(
                                     account.id,
-                                    'account',
-                                    event.target.value
-                                      ? Number(event.target.value)
-                                      : '',
+                                    nextType,
+                                    defaultId,
                                   )
-                                }
+                                }}
                               >
-                                <option value="">Escolha a conta</option>
-                                {organizzeAccounts
-                                  .filter((item) => !item.archived)
-                                  .map((item) => (
-                                    <option key={item.id} value={item.id}>
-                                      {item.name}
+                                <option value="">Sem mapeamento</option>
+                                <option value="account">
+                                  Conta Organizze
+                                </option>
+                                <option value="credit_card">
+                                  Cartão Organizze
+                                </option>
+                                <option value="ignored">Ignorar</option>
+                              </select>
+                              {targetType === 'ignored' ? (
+                                <span className="map-ignored-hint">
+                                  Fora da fila e do alerta
+                                </span>
+                              ) : null}
+                              {targetType === 'account' ? (
+                                <select
+                                  value={targetId}
+                                  disabled={saving}
+                                  onChange={(event) =>
+                                    void saveAccountMap(
+                                      account.id,
+                                      'account',
+                                      event.target.value
+                                        ? Number(event.target.value)
+                                        : '',
+                                    )
+                                  }
+                                >
+                                  <option value="">Escolha a conta</option>
+                                  {organizzeAccounts
+                                    .filter((item) => !item.archived)
+                                    .map((item) => (
+                                      <option key={item.id} value={item.id}>
+                                        {item.name}
+                                      </option>
+                                    ))}
+                                </select>
+                              ) : null}
+                              {targetType === 'credit_card' ? (
+                                <select
+                                  value={targetId}
+                                  disabled={saving}
+                                  onChange={(event) =>
+                                    void saveAccountMap(
+                                      account.id,
+                                      'credit_card',
+                                      event.target.value
+                                        ? Number(event.target.value)
+                                        : '',
+                                    )
+                                  }
+                                >
+                                  <option value="">Escolha o cartão</option>
+                                  {organizzeCreditCards.map((card) => (
+                                    <option key={card.id} value={card.id}>
+                                      {card.name}
                                     </option>
                                   ))}
-                              </select>
-                            ) : null}
-                            {targetType === 'credit_card' ? (
-                              <select
-                                value={targetId}
-                                disabled={saving}
-                                onChange={(event) =>
-                                  void saveAccountMap(
-                                    account.id,
-                                    'credit_card',
-                                    event.target.value
-                                      ? Number(event.target.value)
-                                      : '',
-                                  )
-                                }
-                              >
-                                <option value="">Escolha o cartão</option>
-                                {organizzeCreditCards.map((card) => (
-                                  <option key={card.id} value={card.id}>
-                                    {card.name}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : null}
-                            {targetType ? (
-                              <input
-                                className="map-nickname"
-                                type="text"
-                                maxLength={40}
-                                disabled={saving}
-                                defaultValue={current?.nickname ?? ''}
-                                key={`${account.id}-nick-${current?.nickname ?? ''}`}
-                                placeholder="Apelido"
-                                aria-label={`Apelido para ${account.name}`}
-                                onBlur={(event) =>
-                                  void saveAccountNickname(
-                                    account.id,
-                                    event.target.value,
-                                  )
-                                }
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter') {
-                                    event.currentTarget.blur()
+                                </select>
+                              ) : null}
+                              {targetType && !hasChildCards ? (
+                                <input
+                                  className="map-nickname"
+                                  type="text"
+                                  maxLength={40}
+                                  disabled={saving}
+                                  defaultValue={current?.nickname ?? ''}
+                                  key={`${account.id}-nick-${current?.nickname ?? ''}`}
+                                  placeholder="Apelido"
+                                  aria-label={`Apelido para ${account.name}`}
+                                  onBlur={(event) =>
+                                    void saveAccountNickname(
+                                      account.id,
+                                      event.target.value,
+                                    )
                                   }
-                                }}
-                              />
-                            ) : null}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.currentTarget.blur()
+                                    }
+                                  }}
+                                />
+                              ) : null}
+                            </div>
                           </div>
+                          {hasChildCards ? (
+                            <ul className="map-children">
+                              {childCards.map((card) => {
+                                const nick =
+                                  current?.cardNicknames?.[card.number] ?? ''
+                                return (
+                                  <li
+                                    key={`${account.id}-${card.number}`}
+                                    className="map-child-row"
+                                  >
+                                    <div className="account-meta">
+                                      <strong>
+                                        Cartão · final {card.number}
+                                      </strong>
+                                      <span>
+                                        Vinculado ao cartão pai no Organizze
+                                      </span>
+                                    </div>
+                                    <div className="map-controls">
+                                      <input
+                                        className="map-nickname"
+                                        type="text"
+                                        maxLength={40}
+                                        disabled={saving || !targetType}
+                                        defaultValue={nick}
+                                        key={`${account.id}-${card.number}-nick-${nick}`}
+                                        placeholder={
+                                          targetType
+                                            ? 'Apelido'
+                                            : 'Mapeie o pai primeiro'
+                                        }
+                                        aria-label={`Apelido do cartão final ${card.number}`}
+                                        onBlur={(event) =>
+                                          void saveCardNickname(
+                                            account.id,
+                                            card.number,
+                                            event.target.value,
+                                          )
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === 'Enter') {
+                                            event.currentTarget.blur()
+                                          }
+                                        }}
+                                      />
+                                    </div>
+                                  </li>
+                                )
+                              })}
+                            </ul>
+                          ) : null}
                         </li>
                       )
                     })}

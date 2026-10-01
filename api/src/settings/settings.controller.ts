@@ -28,6 +28,9 @@ class AccountMapDto {
   @IsString()
   @MaxLength(40)
   nickname?: string | null;
+
+  @IsOptional()
+  cardNicknames?: Record<string, string> | null;
 }
 
 class UpdateSettingsDto {

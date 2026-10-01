@@ -83,6 +83,21 @@ export class PluggyController {
     });
   }
 
+  @Post('connections/sync')
+  syncConnections() {
+    return this.pluggy.syncAllConnections();
+  }
+
+  @Get('connections/sync-status')
+  listConnectionSyncStatuses() {
+    return this.pluggy.listConnectionSyncStatuses();
+  }
+
+  @Post('connections/:id/sync')
+  syncConnection(@Param('id') id: string) {
+    return this.pluggy.syncConnection(id);
+  }
+
   @Patch('connections/:id')
   updateConnection(
     @Param('id') id: string,

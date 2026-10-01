@@ -620,6 +620,16 @@
 
 .map-row {
   align-items: flex-start;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.map-parent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+  width: 100%;
+  align-items: flex-start;
 }
 
 .map-controls {
@@ -630,6 +640,35 @@
   align-items: center;
 }
 
+.map-children {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 1rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  border-left: 2px solid #d9e4d1;
+}
+
+.map-child-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1rem;
+  align-items: center;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--oz-radius-sm);
+  background: #f7faf5;
+}
+
+.map-child-row .account-meta strong {
+  font-size: 0.92rem;
+}
+
+.map-child-row .map-controls {
+  margin-left: auto;
+}
+
 .map-ignored-hint {
   color: var(--oz-muted);
   font-size: 0.84rem;
@@ -638,7 +677,7 @@
 
 .map-nickname {
   min-width: 8.5rem;
-  max-width: 11rem;
+  max-width: 14rem;
   color: inherit;
   box-sizing: border-box;
 }
@@ -752,6 +791,33 @@
   align-items: end;
 }
 
+.recon-toolbar-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.recon-sync-link {
+  border: 0;
+  background: transparent;
+  color: var(--oz-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.15rem 0.1rem;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  text-decoration-color: #c5cdc0;
+}
+
+.recon-sync-link:hover {
+  color: var(--oz-green-deep);
+  text-decoration-color: var(--oz-green);
+}
+
 .month-picker {
   display: grid;
   gap: 0.35rem;
@@ -825,6 +891,11 @@
 .badge.kind-invoice {
   background: #f8ebe2;
   color: #7a4020;
+}
+
+.badge.kind-transfer {
+  background: #e4eef8;
+  color: #2a4f73;
 }
 
 .badge.kind-installment {
@@ -1312,5 +1383,299 @@
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 0.55rem;
+}
+
+.nav-label-short {
+  display: none;
+}
+
+/* —— Phone / small screens —— */
+@media (max-width: 720px) {
+  .nav-label-full {
+    display: none;
+  }
+
+  .nav-label-short {
+    display: inline;
+  }
+
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  body {
+    /* Safer tap highlight on iOS */
+    -webkit-tap-highlight-color: rgba(18, 158, 63, 0.12);
+  }
+
+  .topbar {
+    padding: 0.65rem 0.85rem;
+    padding-top: max(0.65rem, env(safe-area-inset-top));
+    gap: 0.55rem;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    font-size: 0.95rem;
+  }
+
+  .brand-text strong {
+    font-size: 0.95rem;
+  }
+
+  .brand-text span {
+    display: none;
+  }
+
+  .topbar-actions {
+    gap: 0.35rem;
+  }
+
+  .topbar-actions .btn {
+    padding: 0.55rem 0.65rem;
+    font-size: 0.82rem;
+    min-height: 2.5rem;
+  }
+
+  .content {
+    width: min(100%, calc(100% - 1.1rem));
+    padding: 1rem 0 max(2.5rem, env(safe-area-inset-bottom));
+  }
+
+  .hero-panel {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 1.05rem 1rem;
+    gap: 0.9rem;
+  }
+
+  .hero-panel h1 {
+    font-size: 1.35rem;
+  }
+
+  .hero-panel p {
+    font-size: 0.88rem;
+  }
+
+  .recon-toolbar {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .month-picker {
+    width: 100%;
+  }
+
+  .month-picker input {
+    width: 100%;
+    min-height: 2.75rem;
+    font-size: 16px;
+  }
+
+  .recon-toolbar-actions {
+    width: 100%;
+  }
+
+  .recon-toolbar-actions .btn {
+    width: 100%;
+    min-height: 2.85rem;
+  }
+
+  .panel {
+    min-height: 0;
+  }
+
+  .panel-head {
+    flex-wrap: wrap;
+    padding: 0.9rem 1rem;
+  }
+
+  .map-parent {
+    flex-direction: column;
+  }
+
+  .map-controls {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .map-controls select,
+  .map-controls .map-nickname,
+  .recon-expand select,
+  .recon-expand input,
+  .month-picker input,
+  .settings-form input,
+  .login-form input,
+  .picker-search,
+  .picker-trigger {
+    width: 100%;
+    max-width: none;
+    font-size: 16px; /* evita zoom automático no iOS */
+    min-height: 2.75rem;
+  }
+
+  .map-nickname {
+    max-width: none;
+  }
+
+  .map-children {
+    padding-left: 0.65rem;
+  }
+
+  .map-child-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .map-child-row .map-controls {
+    margin-left: 0;
+  }
+
+  .config-row {
+    align-items: flex-start;
+  }
+
+  .config-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .recon-card {
+    padding: 0.9rem;
+  }
+
+  .recon-card-main {
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .recon-amount {
+    align-self: flex-start;
+    font-size: 1.12rem;
+  }
+
+  .suggestions li {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
+  }
+
+  .suggestions li .btn {
+    width: 100%;
+    min-height: 2.75rem;
+  }
+
+  .recon-actions,
+  .recon-expand-actions,
+  .modal-actions {
+    flex-direction: column;
+  }
+
+  .recon-actions .btn,
+  .recon-expand-actions .btn,
+  .modal-actions .btn {
+    width: 100%;
+    min-height: 2.75rem;
+  }
+
+  .warning-banner,
+  .status-banner,
+  .ignored-warning {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .warning-link {
+    min-height: 2.5rem;
+    padding: 0.35rem 0;
+  }
+
+  .create-destination {
+    gap: 0.55rem;
+  }
+
+  .create-destination-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+  }
+
+  .modal-backdrop {
+    padding: 0;
+    align-items: end;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .modal-card,
+  .ignored-modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: min(94svh, 100%);
+    border-radius: 18px 18px 0 0;
+    margin: 0;
+  }
+
+  .modal-head {
+    padding: 1rem 1rem 0.5rem;
+    align-items: flex-start;
+  }
+
+  .modal-head h2 {
+    font-size: 1.15rem;
+  }
+
+  .modal-body,
+  .ignored-body {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .modal-actions {
+    padding: 0.85rem 1rem max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .ignored-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ignored-side {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .ignored-side .btn {
+    width: 100%;
+  }
+
+  .picker-panel,
+  .picker-panel-portal {
+    max-width: calc(100vw - 1.5rem);
+  }
+
+  .picker-list {
+    max-height: min(42vh, 280px);
+  }
+
+  .login-page {
+    padding: 1rem;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .login-card {
+    width: 100%;
+    padding: 1.25rem 1.1rem;
+  }
+
+  .account-row {
+    align-items: flex-start;
+  }
+
+  .badges {
+    justify-content: flex-start;
+  }
 }
 

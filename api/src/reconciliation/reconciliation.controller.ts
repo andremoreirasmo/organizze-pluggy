@@ -97,6 +97,20 @@ class IgnoreDto extends DateRangeDto {
   notes?: string;
 }
 
+class TransferDto extends DateRangeDto {
+  @Type(() => Number)
+  @IsInt()
+  otherAccountId!: number;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  counterpartPluggyId?: string;
+}
+
 @Controller('reconciliation')
 export class ReconciliationController {
   constructor(private readonly reconciliation: ReconciliationService) {}
@@ -130,6 +144,14 @@ export class ReconciliationController {
     @Body() body: ImportDto,
   ) {
     return this.reconciliation.importTransaction(pluggyTxId, body);
+  }
+
+  @Post(':pluggyTxId/transfer')
+  transfer(
+    @Param('pluggyTxId') pluggyTxId: string,
+    @Body() body: TransferDto,
+  ) {
+    return this.reconciliation.createAccountTransfer(pluggyTxId, body);
   }
 
   @Post(':pluggyTxId/invoice-payment')

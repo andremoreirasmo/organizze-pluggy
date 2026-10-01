@@ -44,6 +44,19 @@ export type OrganizzeTransaction = {
   recurrence_id?: number | null;
   account_type?: string | null;
   type?: string | null;
+  oposite_transaction_id?: number | null;
+  oposite_account_id?: number | null;
+};
+
+export type CreateOrganizzeTransferPayload = {
+  description?: string;
+  date: string;
+  amount_cents: number;
+  debit_account_id: number;
+  credit_account_id: number;
+  paid?: boolean;
+  notes?: string | null;
+  category_id?: number | null;
 };
 
 export type OrganizzeCreditCard = {

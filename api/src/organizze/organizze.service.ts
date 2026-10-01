@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { InstitutionBrandService } from '../institution/institution-brand.service';
 import {
   CreateInvoicePaymentPayload,
+  CreateOrganizzeTransferPayload,
   CreateOrganizzeTransactionPayload,
   OrganizzeAccount,
   OrganizzeCategory,
@@ -47,6 +48,8 @@ export class OrganizzeService {
     }
 
     const { query: _query, ...fetchInit } = init ?? {};
+    const started = Date.now();
+    const method = (fetchInit.method ?? 'GET').toUpperCase();
     const response = await fetch(url, {
       ...fetchInit,
       headers: {
@@ -57,6 +60,10 @@ export class OrganizzeService {
         ...(fetchInit.headers ?? {}),
       },
     });
+    const elapsed = Date.now() - started;
+    this.logger.log(
+      `[perf] Organizze ${method} ${path} → ${response.status} in ${elapsed}ms`,
+    );
 
     if (!response.ok) {
       const body = await response.text();
@@ -183,6 +190,15 @@ export class OrganizzeService {
     payload: CreateOrganizzeTransactionPayload,
   ): Promise<OrganizzeTransaction> {
     return this.request<OrganizzeTransaction>('/transactions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  createTransfer(
+    payload: CreateOrganizzeTransferPayload,
+  ): Promise<OrganizzeTransaction> {
+    return this.request<OrganizzeTransaction>('/transfers', {
       method: 'POST',
       body: JSON.stringify(payload),
     });

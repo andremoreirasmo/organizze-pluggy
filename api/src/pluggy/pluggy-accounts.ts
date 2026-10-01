@@ -1,12 +1,17 @@
 import type { Account } from 'pluggy-sdk';
 
-const CARD_KEY_SEPARATOR = '::';
+export type PluggyAdditionalCard = {
+  number: string;
+};
 
 export type PluggyAccountView = {
-  /** Mapping key: account id, or `accountId::last4` for additional cards. */
+  /** Always the Pluggy source account id (parent). */
   id: string;
   sourceAccountId: string;
+  /** Primary card last4 when CREDIT; otherwise null. */
   cardNumber: string | null;
+  /** Physical cards under a CREDIT account (for nicknames only). */
+  additionalCards: PluggyAdditionalCard[];
   name: string;
   type: string;
   subtype: string | null;
@@ -21,7 +26,9 @@ type CreditDataWithAdditional = NonNullable<Account['creditData']> & {
   additionalCards?: Array<{ number?: string | null }>;
 };
 
-export function normalizeCardNumber(value: string | null | undefined): string | null {
+export function normalizeCardNumber(
+  value: string | null | undefined,
+): string | null {
   if (!value) {
     return null;
   }
@@ -36,25 +43,14 @@ export function parsePluggyAccountMapKey(key: string): {
   sourceAccountId: string;
   cardNumber: string | null;
 } {
-  const separatorIndex = key.indexOf(CARD_KEY_SEPARATOR);
+  const separatorIndex = key.indexOf('::');
   if (separatorIndex === -1) {
     return { sourceAccountId: key, cardNumber: null };
   }
   return {
     sourceAccountId: key.slice(0, separatorIndex),
-    cardNumber: normalizeCardNumber(key.slice(separatorIndex + CARD_KEY_SEPARATOR.length)),
+    cardNumber: normalizeCardNumber(key.slice(separatorIndex + 2)),
   };
-}
-
-export function buildPluggyAccountMapKey(
-  sourceAccountId: string,
-  cardNumber: string | null | undefined,
-): string {
-  const normalized = normalizeCardNumber(cardNumber);
-  if (!normalized) {
-    return sourceAccountId;
-  }
-  return `${sourceAccountId}${CARD_KEY_SEPARATOR}${normalized}`;
 }
 
 function listCreditCardNumbers(account: Account): string[] {
@@ -93,8 +89,8 @@ export function dedupePluggyAccounts(accounts: Account[]): Account[] {
 }
 
 /**
- * Expand CREDIT accounts that expose additionalCards into one mappable row
- * per physical card (same source account, distinct map keys).
+ * One row per Pluggy account. CREDIT accounts expose additionalCards for
+ * nickname UI; Organizze mapping stays on the parent id only.
  */
 export function expandPluggyAccountsForMapping(
   accounts: Account[],
@@ -108,6 +104,7 @@ export function expandPluggyAccountsForMapping(
         id: account.id,
         sourceAccountId: account.id,
         cardNumber: null,
+        additionalCards: [],
         name: account.name,
         type: account.type,
         subtype: account.subtype ?? null,
@@ -121,60 +118,24 @@ export function expandPluggyAccountsForMapping(
     }
 
     const cardNumbers = listCreditCardNumbers(account);
-    if (cardNumbers.length <= 1) {
-      const cardNumber = cardNumbers[0] ?? normalizeCardNumber(account.number);
-      views.push({
-        id: account.id,
-        sourceAccountId: account.id,
-        cardNumber,
-        name: account.name,
-        type: account.type,
-        subtype: account.subtype ?? null,
-        number: cardNumber ?? account.number ?? null,
-        owner: account.owner ?? null,
-        marketingName: account.marketingName ?? null,
-        creditData: account.creditData,
-        bankData: account.bankData,
-      });
-      continue;
-    }
-
-    for (const cardNumber of cardNumbers) {
-      views.push({
-        id: buildPluggyAccountMapKey(account.id, cardNumber),
-        sourceAccountId: account.id,
-        cardNumber,
-        name: account.name,
-        type: account.type,
-        subtype: account.subtype ?? null,
-        number: cardNumber,
-        owner: account.owner ?? null,
-        marketingName: account.marketingName ?? null,
-        creditData: account.creditData,
-        bankData: account.bankData,
-      });
-    }
+    const primary = cardNumbers[0] ?? normalizeCardNumber(account.number);
+    views.push({
+      id: account.id,
+      sourceAccountId: account.id,
+      cardNumber: primary,
+      additionalCards: cardNumbers.map((number) => ({ number })),
+      name: account.name,
+      type: account.type,
+      subtype: account.subtype ?? null,
+      number: primary ?? account.number ?? null,
+      owner: account.owner ?? null,
+      marketingName: account.marketingName ?? null,
+      creditData: account.creditData,
+      bankData: account.bankData,
+    });
   }
 
   return views;
-}
-
-export function resolveMappedAccountKey(params: {
-  sourceAccountId: string;
-  cardNumber: string | null | undefined;
-  mappedKeys: Set<string>;
-}): string {
-  const specific = buildPluggyAccountMapKey(
-    params.sourceAccountId,
-    params.cardNumber,
-  );
-  if (params.mappedKeys.has(specific)) {
-    return specific;
-  }
-  if (params.mappedKeys.has(params.sourceAccountId)) {
-    return params.sourceAccountId;
-  }
-  return specific;
 }
 
 export function transactionCardNumber(
@@ -189,4 +150,15 @@ export function transactionCardNumber(
     return normalizeCardNumber(account.number);
   }
   return null;
+}
+
+export function resolveCardNickname(
+  map: { nickname?: string | null; cardNicknames?: Record<string, string> | null },
+  cardNumber: string | null | undefined,
+): string | null {
+  const normalized = normalizeCardNumber(cardNumber);
+  if (normalized && map.cardNicknames?.[normalized]) {
+    return map.cardNicknames[normalized] ?? null;
+  }
+  return map.nickname?.trim() ? map.nickname.trim() : null;
 }
