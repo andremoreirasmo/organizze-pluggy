@@ -10,5 +10,6 @@ web/dist/
 api/dist/
 .idea/
 .vscode/
+.cursor/
 *.tsbuildinfo
 .prisma/

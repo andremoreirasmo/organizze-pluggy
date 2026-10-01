@@ -39,6 +39,12 @@ class LinkDto extends DateRangeDto {
   @IsOptional()
   @IsBoolean()
   syncAmount?: boolean;
+
+  /** Valor final no Organizze (centavos, com sinal). Tem prioridade sobre syncAmount. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  amountCents?: number;
 }
 
 class ImportDto extends DateRangeDto {
@@ -69,6 +75,12 @@ class ImportDto extends DateRangeDto {
   @IsOptional()
   @IsBoolean()
   paid?: boolean;
+
+  /** Valor no Organizze (centavos, com sinal). Padrão: valor convertido do Pluggy. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  amountCents?: number;
 }
 
 class InvoicePaymentDto extends DateRangeDto {
@@ -109,6 +121,12 @@ class TransferDto extends DateRangeDto {
   @IsOptional()
   @IsString()
   counterpartPluggyId?: string;
+
+  /** Valor da transferência em centavos (positivo). Padrão: |valor Pluggy|. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  amountCents?: number;
 }
 
 @Controller('reconciliation')

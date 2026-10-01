@@ -13,6 +13,7 @@ import {
   YAxis,
 } from 'recharts'
 import { BottomSheet } from './BottomSheet'
+import { useTheme } from './useTheme'
 
 export type InstallmentScheduleEntry = {
   date: string
@@ -207,6 +208,23 @@ export function InstallmentsPanel({
   onIgnorePurchase,
   onUnignorePurchase,
 }: Props) {
+  const { resolved: theme } = useTheme()
+  const isDark = theme === 'dark'
+  const chartColors = isDark
+    ? {
+        focus: '#5c7cfa',
+        idle: '#3a4254',
+        tick: '#9aa19a',
+        label: '#c5cbc3',
+        cursor: 'rgba(92, 124, 250, 0.12)',
+      }
+    : {
+        focus: '#4c6ef5',
+        idle: '#bac8ff',
+        tick: '#868e96',
+        label: '#495057',
+        cursor: 'rgba(76, 110, 245, 0.08)',
+      }
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showIgnored, setShowIgnored] = useState(false)
@@ -285,18 +303,18 @@ export function InstallmentsPanel({
                 dataKey="label"
                 axisLine={false}
                 tickLine={false}
-                tick={{ fill: '#868e96', fontSize: 12 }}
+                tick={{ fill: chartColors.tick, fontSize: 12 }}
               />
               <YAxis hide domain={[0, 'auto']} />
               <Tooltip
-                cursor={{ fill: 'rgba(76, 110, 245, 0.08)' }}
+                cursor={{ fill: chartColors.cursor }}
                 content={<MonthBarTooltip />}
               />
               <Bar dataKey="value" radius={[8, 8, 4, 4]} maxBarSize={36}>
                 {barData.map((entry) => (
                   <Cell
                     key={entry.monthKey}
-                    fill={entry.focus ? '#4c6ef5' : '#bac8ff'}
+                    fill={entry.focus ? chartColors.focus : chartColors.idle}
                     cursor="pointer"
                     onClick={() => onFocusMonthChange(entry.monthKey)}
                   />
@@ -310,7 +328,7 @@ export function InstallmentsPanel({
                     )
                   }
                   style={{
-                    fill: '#495057',
+                    fill: chartColors.label,
                     fontSize: 11,
                     fontWeight: 700,
                   }}

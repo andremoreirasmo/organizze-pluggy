@@ -10,6 +10,7 @@ import {
   Transaction,
   Account,
   Investment,
+  type CreditCardBills,
 } from 'pluggy-sdk';
 import { PrismaService } from '../prisma/prisma.module';
 import { InstitutionBrandService } from '../institution/institution-brand.service';
@@ -386,6 +387,26 @@ export class PluggyService {
       }
     }
     return [...byId.values()];
+  }
+
+  /** Closed/open credit-card bills (faturas) for a Pluggy CREDIT account. */
+  async listCreditCardBills(accountId: string): Promise<CreditCardBills[]> {
+    const results: CreditCardBills[] = [];
+    let page = 1;
+    let totalPages = 1;
+    while (page <= totalPages) {
+      const response = await this.client.fetchCreditCardBills(accountId, {
+        page,
+        pageSize: 50,
+      });
+      results.push(...response.results);
+      totalPages = Math.max(1, response.totalPages ?? 1);
+      page += 1;
+      if (page > 20) {
+        break;
+      }
+    }
+    return results;
   }
 
   async listAccountViews(): Promise<PluggyAccountView[]> {

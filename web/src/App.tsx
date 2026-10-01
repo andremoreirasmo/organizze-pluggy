@@ -15,6 +15,8 @@ import {
   type AppView,
   type SettingsTab,
 } from './routes'
+import { themePreferenceLabel } from './theme'
+import { useTheme } from './useTheme'
 
 type OrganizzeAccount = {
   id: number
@@ -409,6 +411,10 @@ function App() {
   const view = viewFromPath(location.pathname)
   const settingsSection =
     readSettingsTabParam(searchParams) ?? ('banks' as SettingsTab)
+  const { preference: themePreference, cyclePreference } = useTheme()
+  const themeLabel = themePreferenceLabel(themePreference)
+  const themeIcon =
+    themePreference === 'dark' ? '☾' : themePreference === 'light' ? '☀' : '◐'
 
   const [sessionEmail, setSessionEmail] = useState<string | null>(null)
   const [authReady, setAuthReady] = useState(false)
@@ -1244,6 +1250,20 @@ function App() {
     return (
       <div className="login-page">
         <div className="login-card">
+          <div className="login-theme-row">
+            <button
+              type="button"
+              className="btn ghost theme-toggle"
+              onClick={cyclePreference}
+              title={`Tema: ${themeLabel}`}
+              aria-label={`Alternar tema (atual: ${themeLabel})`}
+            >
+              <span className="theme-toggle-icon" aria-hidden>
+                {themeIcon}
+              </span>
+              <span className="theme-toggle-label">{themeLabel}</span>
+            </button>
+          </div>
           <div className="brand">
             <div className="brand-mark" aria-hidden>
               o
@@ -1264,6 +1284,20 @@ function App() {
     return (
       <div className="login-page">
         <div className="login-card">
+          <div className="login-theme-row">
+            <button
+              type="button"
+              className="btn ghost theme-toggle"
+              onClick={cyclePreference}
+              title={`Tema: ${themeLabel}`}
+              aria-label={`Alternar tema (atual: ${themeLabel})`}
+            >
+              <span className="theme-toggle-icon" aria-hidden>
+                {themeIcon}
+              </span>
+              <span className="theme-toggle-label">{themeLabel}</span>
+            </button>
+          </div>
           <div className="brand">
             <div className="brand-mark" aria-hidden>
               o
@@ -1344,6 +1378,18 @@ function App() {
             <span className="nav-label-short">Config</span>
           </button>
         </nav>
+        <button
+          type="button"
+          className="btn ghost theme-toggle"
+          onClick={cyclePreference}
+          title={`Tema: ${themeLabel}`}
+          aria-label={`Alternar tema (atual: ${themeLabel})`}
+        >
+          <span className="theme-toggle-icon" aria-hidden>
+            {themeIcon}
+          </span>
+          <span className="theme-toggle-label">{themeLabel}</span>
+        </button>
         <button
           type="button"
           className="btn ghost topbar-logout"

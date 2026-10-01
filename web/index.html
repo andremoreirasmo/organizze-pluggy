@@ -10,6 +10,29 @@
     <meta name="theme-color" content="#129e3f" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>Organizze ↔ Pluggy</title>
+    <script>
+      (function () {
+        try {
+          var key = 'op-theme'
+          var pref = localStorage.getItem(key)
+          if (pref !== 'light' && pref !== 'dark' && pref !== 'system') {
+            pref = 'system'
+          }
+          var dark =
+            pref === 'dark' ||
+            (pref === 'system' &&
+              window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          var theme = dark ? 'dark' : 'light'
+          document.documentElement.setAttribute('data-theme', theme)
+          document.documentElement.style.colorScheme = theme
+          var meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) {
+            meta.setAttribute('content', dark ? '#121512' : '#129e3f')
+          }
+        } catch (e) {}
+      })()
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

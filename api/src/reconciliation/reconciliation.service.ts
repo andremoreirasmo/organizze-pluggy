@@ -205,6 +205,7 @@ export class ReconciliationService {
       organizzeTransactionId: number;
       syncDate?: boolean;
       syncAmount?: boolean;
+      amountCents?: number;
       from: string;
       to: string;
     },
@@ -234,8 +235,10 @@ export class ReconciliationService {
     if (body.syncDate) {
       payload.date = queueItem.pluggy.date.slice(0, 10);
     }
-    if (body.syncAmount) {
-      payload.amount_cents = queueItem.pluggy.amountCents;
+    if (body.amountCents !== undefined) {
+      payload.amount_cents = body.amountCents;
+    } else if (body.syncAmount) {
+      payload.amount_cents = queueItem.pluggy.organizzeAmountCents;
     }
 
     const updated = await this.organizze.updateTransaction(
@@ -266,6 +269,7 @@ export class ReconciliationService {
       creditCardId?: number | null;
       creditCardInvoiceId?: number | null;
       paid?: boolean;
+      amountCents?: number;
     },
   ) {
     const perf = startPerf(`import ${pluggyTxId}`);
@@ -277,6 +281,10 @@ export class ReconciliationService {
     perf.mark('resolvePending');
     const pluggy = queueItem.pluggy;
     const notes = this.organizze.appendPluggyMarker(null, pluggyTxId);
+    const amountCents =
+      body.amountCents !== undefined
+        ? body.amountCents
+        : pluggy.organizzeAmountCents;
 
     if (pluggy.kind === 'credit_purchase' || body.creditCardId) {
       const creditCardId =
@@ -293,7 +301,7 @@ export class ReconciliationService {
       const created = await this.organizze.createTransaction({
         description: this.buildImportDescription(pluggy, body.description),
         date: pluggy.date.slice(0, 10),
-        amount_cents: pluggy.organizzeAmountCents,
+        amount_cents: amountCents,
         paid: body.paid ?? true,
         notes,
         category_id: body.categoryId ?? null,
@@ -329,7 +337,7 @@ export class ReconciliationService {
     const created = await this.organizze.createTransaction({
       description: body.description?.trim() || pluggy.description,
       date: pluggy.date.slice(0, 10),
-      amount_cents: pluggy.organizzeAmountCents,
+      amount_cents: amountCents,
       paid: body.paid ?? true,
       notes,
       category_id: body.categoryId ?? null,
@@ -409,6 +417,7 @@ export class ReconciliationService {
       otherAccountId: number;
       description?: string;
       counterpartPluggyId?: string;
+      amountCents?: number;
     },
   ) {
     const perf = startPerf(`transfer ${pluggyTxId}`);
@@ -479,7 +488,13 @@ export class ReconciliationService {
       perf.mark('resolveCounterpart');
     }
 
-    const amountCents = Math.abs(pluggy.organizzeAmountCents);
+    const transferAmountCents =
+      body.amountCents !== undefined
+        ? Math.abs(body.amountCents)
+        : Math.abs(pluggy.organizzeAmountCents);
+    if (transferAmountCents <= 0) {
+      throw new BadRequestException('amountCents must be a positive value');
+    }
     const debitAccountId =
       pluggy.organizzeAmountCents < 0 ? sourceAccountId : otherAccountId;
     const creditAccountId =
@@ -498,7 +513,7 @@ export class ReconciliationService {
     const created = await this.organizze.createTransfer({
       description,
       date: pluggy.date.slice(0, 10),
-      amount_cents: amountCents,
+      amount_cents: transferAmountCents,
       debit_account_id: debitAccountId,
       credit_account_id: creditAccountId,
       paid: true,

@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --oz-green: #129e3f;
   --oz-green-dark: #0d772f;
   --oz-green-deep: #004f26;
@@ -6,15 +7,58 @@
   --oz-green-tint: rgba(18, 158, 63, 0.1);
   --oz-bg: #f2f4ef;
   --oz-bg-warm: #fefdf9;
+  --oz-bg-end: #e8ebe4;
   --oz-surface: #ffffff;
+  --oz-surface-2: #f7f8f4;
+  --oz-surface-3: #f1f3ef;
   --oz-ink: #201e1f;
   --oz-muted: #858782;
   --oz-border: #dbded8;
+  --oz-border-strong: #e6e4df;
   --oz-danger: #c62828;
+  --oz-danger-bg: #fdecea;
+  --oz-danger-border: #f5c6c2;
+  --oz-warn-bg: #fff6e8;
+  --oz-warn-border: #f0d7a8;
+  --oz-topbar-bg: rgba(255, 255, 255, 0.86);
+  --oz-overlay: rgba(28, 32, 26, 0.45);
+  --oz-close-bg: #eef1ec;
+  --oz-close-fg: #5c6358;
+  --oz-grab: #ced4da;
   --oz-radius: 12px;
   --oz-radius-sm: 8px;
   --oz-shadow: 0 8px 24px rgba(32, 30, 31, 0.06);
   --oz-font: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --oz-green: #3dba68;
+  --oz-green-dark: #32a85a;
+  --oz-green-deep: #9aefb4;
+  --oz-green-soft: #1b4d2e;
+  --oz-green-tint: rgba(61, 186, 104, 0.16);
+  --oz-bg: #121512;
+  --oz-bg-warm: #171a16;
+  --oz-bg-end: #0d0f0d;
+  --oz-surface: #1c201c;
+  --oz-surface-2: #242924;
+  --oz-surface-3: #2b312b;
+  --oz-ink: #e8ebe4;
+  --oz-muted: #9aa19a;
+  --oz-border: #323a32;
+  --oz-border-strong: #3e473e;
+  --oz-danger: #f07178;
+  --oz-danger-bg: rgba(240, 113, 120, 0.14);
+  --oz-danger-border: rgba(240, 113, 120, 0.35);
+  --oz-warn-bg: rgba(255, 193, 7, 0.12);
+  --oz-warn-border: rgba(255, 193, 7, 0.32);
+  --oz-topbar-bg: rgba(18, 21, 18, 0.9);
+  --oz-overlay: rgba(0, 0, 0, 0.62);
+  --oz-close-bg: #2b312b;
+  --oz-close-fg: #c5cbc3;
+  --oz-grab: #4a524a;
+  --oz-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
 }
 
 *,
@@ -38,7 +82,7 @@ body {
   overflow-x: hidden;
 }
 
-/* Keep the page wash tied to the viewport so long lists don't flatten it to solid green. */
+/* Keep the page wash tied to the viewport so long lists don't flatten it. */
 body::before {
   content: '';
   position: fixed;
@@ -46,8 +90,32 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(circle at top right, rgba(143, 230, 171, 0.35), transparent 42%),
-    linear-gradient(180deg, var(--oz-bg-warm) 0%, var(--oz-bg) 48%, #e8ebe4 100%);
+    radial-gradient(
+      circle at top right,
+      color-mix(in srgb, var(--oz-green-soft) 55%, transparent),
+      transparent 42%
+    ),
+    linear-gradient(
+      180deg,
+      var(--oz-bg-warm) 0%,
+      var(--oz-bg) 48%,
+      var(--oz-bg-end) 100%
+    );
+}
+
+html[data-theme='dark'] body::before {
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(61, 186, 104, 0.14),
+      transparent 44%
+    ),
+    linear-gradient(
+      180deg,
+      var(--oz-bg-warm) 0%,
+      var(--oz-bg) 52%,
+      var(--oz-bg-end) 100%
+    );
 }
 
 #root {

@@ -145,6 +145,22 @@ export type OrganizzeInvoice = {
   credit_card_id: number
 }
 
+type OrganizzeTransactionRow = {
+  id: number
+  description: string
+  date: string
+  paid: boolean
+  amount_cents: number
+  total_installments: number
+  installment: number
+  recurring: boolean
+  account_id: number | null
+  category_id: number | null
+  notes: string | null
+  credit_card_id: number | null
+  credit_card_invoice_id: number | null
+}
+
 type ApiFetch = <T>(path: string, init?: RequestInit) => Promise<T>
 
 type ActionKind = 'link' | 'import' | 'invoice' | 'ignore' | 'transfer'
@@ -175,6 +191,56 @@ function formatBRL(amountCents: number): string {
     style: 'currency',
     currency: 'BRL',
   })
+}
+
+function formatSignedAmountInput(amountCents: number): string {
+  const abs = Math.abs(amountCents / 100)
+  const formatted = abs.toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  return amountCents < 0 ? `-${formatted}` : formatted
+}
+
+function formatUnsignedAmountInput(amountCents: number): string {
+  return (Math.abs(amountCents) / 100).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+function parseSignedBRLInputToCents(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+  let body = trimmed
+  const negative = body.startsWith('-')
+  if (negative) {
+    body = body.slice(1).trim()
+  }
+  if (!body) {
+    return null
+  }
+  let amount: number
+  if (body.includes(',')) {
+    amount = Number(body.replace(/\./g, '').replace(',', '.'))
+  } else {
+    amount = Number(body)
+  }
+  if (!Number.isFinite(amount)) {
+    return null
+  }
+  const cents = Math.round(amount * 100)
+  return negative ? -cents : cents
+}
+
+function parseUnsignedBRLInputToCents(value: string): number | null {
+  const signed = parseSignedBRLInputToCents(value)
+  if (signed === null) {
+    return null
+  }
+  return Math.abs(signed)
 }
 
 function formatMoney(amountCents: number, currencyCode: string): string {
@@ -241,6 +307,55 @@ function formatDateBR(isoDate: string): string {
 
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+function shiftIsoDate(isoDate: string, days: number): string {
+  const utc = new Date(`${isoDate.slice(0, 10)}T12:00:00Z`)
+  utc.setUTCDate(utc.getUTCDate() + days)
+  return utc.toISOString().slice(0, 10)
+}
+
+const PLUGGY_NOTE_RE = /\[pluggy:[0-9a-fA-F-]{36}\]/
+
+function notesAlreadyLinked(notes: string | null): boolean {
+  return Boolean(notes && PLUGGY_NOTE_RE.test(notes))
+}
+
+function toSearchCandidate(
+  tx: OrganizzeTransactionRow,
+  pluggy: QueuePluggyTransaction,
+  accounts: OrganizzeAccount[],
+  cards: OrganizzeCreditCard[],
+  categories: OrganizzeCategory[],
+): MatchCandidate {
+  const date = tx.date.slice(0, 10)
+  return {
+    organizzeTransactionId: tx.id,
+    description: tx.description,
+    date,
+    amountCents: tx.amount_cents,
+    paid: tx.paid,
+    recurring: tx.recurring,
+    accountId: tx.account_id,
+    accountName:
+      accounts.find((account) => account.id === tx.account_id)?.name ?? null,
+    creditCardId: tx.credit_card_id,
+    creditCardName:
+      cards.find((card) => card.id === tx.credit_card_id)?.name ?? null,
+    creditCardInvoiceId: tx.credit_card_invoice_id,
+    categoryId: tx.category_id,
+    categoryName:
+      categories.find((category) => category.id === tx.category_id)?.name ??
+      null,
+    installment: tx.installment > 0 ? tx.installment : null,
+    totalInstallments:
+      tx.total_installments > 0 ? tx.total_installments : null,
+    score: 0,
+    amountDiffCents: Math.abs(
+      Math.abs(tx.amount_cents) - Math.abs(pluggy.organizzeAmountCents),
+    ),
+    daysDiff: Math.abs(signedDaysBetween(pluggy.date.slice(0, 10), date)),
+  }
 }
 
 function signedDaysBetween(fromIso: string, toIso: string): number {
@@ -489,11 +604,23 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [createItem, setCreateItem] = useState<ReconciliationQueueItem | null>(
     null,
   )
+  const [searchItem, setSearchItem] = useState<ReconciliationQueueItem | null>(
+    null,
+  )
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchRows, setSearchRows] = useState<OrganizzeTransactionRow[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchLinkAmount, setSearchLinkAmount] = useState('')
+  const [searchOnlyMapped, setSearchOnlyMapped] = useState(true)
+  const [linkAmountInputs, setLinkAmountInputs] = useState<
+    Record<string, string>
+  >({})
   const [ignoredOpen, setIgnoredOpen] = useState(false)
   const [ignoredItems, setIgnoredItems] = useState<IgnoredItem[]>([])
   const [ignoredLoading, setIgnoredLoading] = useState(false)
   const [restoringId, setRestoringId] = useState<string | null>(null)
   const [importDescription, setImportDescription] = useState('')
+  const [importAmount, setImportAmount] = useState('')
   const [importCategoryId, setImportCategoryId] = useState('')
   const [invoiceCardId, setInvoiceCardId] = useState('')
   const [invoiceId, setInvoiceId] = useState('')
@@ -573,7 +700,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const modalBusy =
     action?.kind === 'import' ||
     action?.kind === 'invoice' ||
-    action?.kind === 'transfer'
+    action?.kind === 'transfer' ||
+    (Boolean(searchItem) && action?.kind === 'link')
 
   const createSelectedInvoice = useMemo(() => {
     if (!createItem || createItem.pluggy.kind !== 'credit_purchase' || !invoiceId) {
@@ -811,12 +939,28 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     [apiFetch, invoicesByCard, onError],
   )
 
+  const linkAmountForItem = useCallback(
+    (item: ReconciliationQueueItem) =>
+      linkAmountInputs[item.pluggy.id] ??
+      formatSignedAmountInput(item.pluggy.organizzeAmountCents),
+    [linkAmountInputs],
+  )
+
+  const setLinkAmountForItem = (pluggyId: string, value: string) => {
+    setLinkAmountInputs((prev) => ({ ...prev, [pluggyId]: value }))
+  }
+
   const openCreateModal = (item: ReconciliationQueueItem) => {
     setCreateItem(item)
     setImportDescription(
       isSamePersonTransfer(item.pluggy)
         ? item.pluggy.description || 'Transferência entre contas'
         : item.pluggy.description,
+    )
+    setImportAmount(
+      isSamePersonTransfer(item.pluggy)
+        ? formatUnsignedAmountInput(item.pluggy.organizzeAmountCents)
+        : formatSignedAmountInput(item.pluggy.organizzeAmountCents),
     )
     setImportCategoryId('')
     setInvoiceCardId('')
@@ -853,6 +997,102 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setCreateItem(null)
   }
 
+  const openSearchModal = (item: ReconciliationQueueItem) => {
+    setSearchItem(item)
+    setSearchQuery(item.pluggy.description.slice(0, 40))
+    setSearchLinkAmount(
+      formatSignedAmountInput(item.pluggy.organizzeAmountCents),
+    )
+    setSearchOnlyMapped(true)
+    setSearchRows([])
+    onError(null)
+    const from = shiftIsoDate(item.pluggy.date.slice(0, 10), -45)
+    const to = shiftIsoDate(item.pluggy.date.slice(0, 10), 45)
+    setSearchLoading(true)
+    void apiFetch<OrganizzeTransactionRow[]>(
+      `/api/organizze/transactions?startDate=${encodeURIComponent(from)}&endDate=${encodeURIComponent(to)}`,
+    )
+      .then((rows) => {
+        setSearchRows(rows)
+      })
+      .catch((err) => {
+        onError(
+          err instanceof Error
+            ? err.message
+            : 'Erro ao carregar lançamentos do Organizze',
+        )
+      })
+      .finally(() => {
+        setSearchLoading(false)
+      })
+  }
+
+  const closeSearchModal = () => {
+    if (modalBusy) {
+      return
+    }
+    setSearchItem(null)
+    setSearchRows([])
+    setSearchQuery('')
+  }
+
+  const searchCandidates = useMemo(() => {
+    if (!searchItem) {
+      return [] as MatchCandidate[]
+    }
+    const q = searchQuery.trim().toLowerCase()
+    const mappedId = searchItem.pluggy.mappedOrganizzeTargetId
+    const isCard = searchItem.pluggy.mappedTargetType === 'credit_card'
+    const filtered = searchRows.filter((tx) => {
+      if (notesAlreadyLinked(tx.notes)) {
+        return false
+      }
+      if (searchOnlyMapped) {
+        if (isCard) {
+          if (tx.credit_card_id !== mappedId) {
+            return false
+          }
+        } else if (tx.account_id !== mappedId) {
+          return false
+        }
+      }
+      if (!q) {
+        return true
+      }
+      const amountText = (tx.amount_cents / 100).toFixed(2).replace('.', ',')
+      const haystack =
+        `${tx.description} ${tx.date} ${tx.id} ${amountText} ${Math.abs(tx.amount_cents)}`.toLowerCase()
+      return haystack.includes(q) || q.split(/\s+/).every((part) => haystack.includes(part))
+    })
+
+    return filtered
+      .map((tx) =>
+        toSearchCandidate(
+          tx,
+          searchItem.pluggy,
+          organizzeAccounts,
+          creditCards,
+          categories,
+        ),
+      )
+      .sort((a, b) => {
+        const amountCmp = a.amountDiffCents - b.amountDiffCents
+        if (amountCmp !== 0) {
+          return amountCmp
+        }
+        return a.daysDiff - b.daysDiff
+      })
+      .slice(0, 40)
+  }, [
+    searchItem,
+    searchQuery,
+    searchRows,
+    searchOnlyMapped,
+    organizzeAccounts,
+    creditCards,
+    categories,
+  ])
+
   const removeFromQueue = (...pluggyIds: string[]) => {
     const idSet = new Set(pluggyIds)
     setQueue((current) =>
@@ -874,6 +1114,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     const ids = Array.isArray(pluggyIds) ? pluggyIds : [pluggyIds]
     removeFromQueue(...ids)
     setCreateItem(null)
+    setSearchItem(null)
     setAction(null)
     setStatusMessage(successMessage)
   }
@@ -881,6 +1122,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const link = async (
     item: ReconciliationQueueItem,
     candidate: MatchCandidate,
+    options?: { amountCents?: number },
   ) => {
     const parcel =
       candidate.totalInstallments &&
@@ -905,7 +1147,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           to: range.to,
           organizzeTransactionId: candidate.organizzeTransactionId,
           syncDate: true,
-          syncAmount: false,
+          ...(options?.amountCents !== undefined
+            ? { amountCents: options.amountCents }
+            : {}),
         }),
       })
       console.info(
@@ -925,6 +1169,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   }
 
   const importTx = async (item: ReconciliationQueueItem) => {
+    const amountCents = parseSignedBRLInputToCents(importAmount)
+    if (amountCents === null || amountCents === 0) {
+      onError('Informe um valor válido para o Organizze')
+      return
+    }
     if (item.pluggy.kind === 'credit_purchase' && !invoiceId) {
       onError('Selecione a fatura do cartão')
       return
@@ -944,6 +1193,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         to: range.to,
         description: importDescription.trim() || item.pluggy.description,
         paid: true,
+        amountCents,
       }
       if (importCategoryId) {
         body.categoryId = Number(importCategoryId)
@@ -1005,6 +1255,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   }
 
   const transferTx = async (item: ReconciliationQueueItem) => {
+    const amountCents = parseUnsignedBRLInputToCents(importAmount)
+    if (amountCents === null || amountCents <= 0) {
+      onError('Informe um valor válido para a transferência')
+      return
+    }
     if (!transferOtherAccountId) {
       onError('Selecione a outra conta da transferência')
       return
@@ -1050,6 +1305,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
             importDescription.trim() ||
             item.pluggy.description ||
             'Transferência entre contas',
+          amountCents,
           ...(useCounterpart
             ? { counterpartPluggyId: useCounterpart }
             : {}),
@@ -1340,7 +1596,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               </div>
             </article>
           ) : (
-        <ul className={`recon-list ${anyBusy && !createItem ? 'is-busy' : ''}`}>
+        <ul className={`recon-list ${anyBusy && !createItem && !searchItem ? 'is-busy' : ''}`}>
           {filteredItems.map((item) => {
             const cardAction =
               action?.pluggyId === item.pluggy.id &&
@@ -1419,6 +1675,20 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                         Pluggy nas observações.
                       </span>
                     </div>
+                    <label className="link-amount-field">
+                      Valor no Organizze ao vincular
+                      <input
+                        value={linkAmountForItem(item)}
+                        disabled={anyBusy}
+                        inputMode="decimal"
+                        onChange={(event) =>
+                          setLinkAmountForItem(
+                            item.pluggy.id,
+                            event.target.value,
+                          )
+                        }
+                      />
+                    </label>
                     <ul>
                       {item.suggestions.map((candidate) => {
                         const linkingThis =
@@ -1449,7 +1719,18 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                               type="button"
                               className="btn"
                               disabled={anyBusy}
-                              onClick={() => void link(item, candidate)}
+                              onClick={() => {
+                                const amountCents = parseSignedBRLInputToCents(
+                                  linkAmountForItem(item),
+                                )
+                                if (amountCents === null || amountCents === 0) {
+                                  onError(
+                                    'Informe um valor válido para o Organizze',
+                                  )
+                                  return
+                                }
+                                void link(item, candidate, { amountCents })
+                              }}
                             >
                               {linkingThis ? (
                                 <>
@@ -1467,11 +1748,20 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   </div>
                 ) : !isSamePersonTransfer(item.pluggy) ? (
                   <p className="no-suggestions">
-                    Sem sugestões próximas — use Criar lançamento ou Ignorar.
+                    Sem sugestões próximas (valor/data fora da tolerância) —
+                    use <strong>Buscar lançamento</strong>, Criar ou Ignorar.
                   </p>
                 ) : null}
 
                 <div className="recon-actions">
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={anyBusy}
+                    onClick={() => openSearchModal(item)}
+                  >
+                    Buscar lançamento
+                  </button>
                   <button
                     type="button"
                     className="btn ghost"
@@ -1633,6 +1923,18 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 />
               </label>
 
+              <label>
+                {createIsTransfer
+                  ? 'Valor da transferência (R$)'
+                  : 'Valor no Organizze (R$)'}
+                <input
+                  value={importAmount}
+                  disabled={modalBusy}
+                  inputMode="decimal"
+                  onChange={(event) => setImportAmount(event.target.value)}
+                />
+              </label>
+
               {createIsTransfer ? (
                 <label>
                   {createItem.pluggy.organizzeAmountCents < 0
@@ -1660,7 +1962,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     <CategoryPicker
                       categories={categories}
                       value={importCategoryId}
-                      amountCents={createItem.pluggy.organizzeAmountCents}
+                      amountCents={
+                        parseSignedBRLInputToCents(importAmount) ??
+                        createItem.pluggy.organizzeAmountCents
+                      }
                       disabled={modalBusy}
                       onChange={setImportCategoryId}
                     />
@@ -1771,6 +2076,165 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 )}
               </div>
             </div>
+        </BottomSheet>
+      ) : null}
+
+      {searchItem ? (
+        <BottomSheet
+          onClose={closeSearchModal}
+          busy={modalBusy || searchLoading}
+          labelledBy="search-link-title"
+          title="Buscar lançamento"
+          subtitle="Procure qualquer lançamento no Organizze (mesmo com valor bem diferente) e vincule a este item do Open Finance."
+        >
+          {modalBusy ? (
+            <div className="modal-loading" role="status">
+              <span className="spinner lg" aria-hidden />
+              <strong>Vinculando…</strong>
+              <p>{action?.message ?? 'Atualizando Organizze.'}</p>
+            </div>
+          ) : null}
+
+          <div className="settings-form modal-body">
+            <div className="create-destination">
+              <div className="create-destination-row">
+                <span>Open Finance</span>
+                <strong>{searchItem.pluggy.description}</strong>
+              </div>
+              <div className="create-destination-row">
+                <span>Valor / data</span>
+                <strong>
+                  {formatBRL(searchItem.pluggy.organizzeAmountCents)} ·{' '}
+                  {formatSmartDate(searchItem.pluggy.date)}
+                </strong>
+              </div>
+            </div>
+
+            <label>
+              Buscar
+              <input
+                value={searchQuery}
+                disabled={modalBusy || searchLoading}
+                placeholder="Descrição, valor ou data…"
+                autoFocus
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+            </label>
+
+            <label className="balance-source-toggle">
+              <input
+                type="checkbox"
+                checked={searchOnlyMapped}
+                disabled={modalBusy || searchLoading}
+                onChange={(event) => setSearchOnlyMapped(event.target.checked)}
+              />
+              <span>
+                Só no destino mapeado (
+                {searchItem.pluggy.mappedTargetType === 'credit_card'
+                  ? 'cartão'
+                  : 'conta'}{' '}
+                #{searchItem.pluggy.mappedOrganizzeTargetId})
+              </span>
+            </label>
+
+            <label>
+              Valor no Organizze ao vincular (R$)
+              <input
+                value={searchLinkAmount}
+                disabled={modalBusy || searchLoading}
+                inputMode="decimal"
+                onChange={(event) => setSearchLinkAmount(event.target.value)}
+              />
+            </label>
+
+            {searchLoading ? (
+              <div className="empty loading-empty">
+                <span className="spinner lg" aria-hidden />
+                <strong>Carregando lançamentos…</strong>
+              </div>
+            ) : searchCandidates.length === 0 ? (
+              <div className="empty">
+                <strong>Nenhum lançamento encontrado</strong>
+                <p>
+                  Ajuste o texto da busca ou desmarque o filtro do destino
+                  mapeado.
+                </p>
+              </div>
+            ) : (
+              <div className="suggestions search-link-results">
+                <div className="suggestions-head">
+                  <strong>
+                    {searchCandidates.length} resultado
+                    {searchCandidates.length === 1 ? '' : 's'}
+                  </strong>
+                  <span>±45 dias em torno de {formatSmartDate(searchItem.pluggy.date)}</span>
+                </div>
+                <ul>
+                  {searchCandidates.map((candidate) => {
+                    const linkingThis =
+                      action?.kind === 'link' &&
+                      action.candidateId === candidate.organizzeTransactionId
+                    const destination = candidateDestination(candidate)
+                    const metaParts = [
+                      formatSmartDate(candidate.date),
+                      formatBRL(candidate.amountCents),
+                      destination,
+                      candidate.categoryName,
+                      candidate.amountDiffCents > 0
+                        ? `Δ ${formatBRL(candidate.amountDiffCents)}`
+                        : 'mesmo valor',
+                      candidate.paid ? null : 'em aberto',
+                    ].filter((part): part is string => Boolean(part))
+                    return (
+                      <li key={candidate.organizzeTransactionId}>
+                        <div>
+                          <span>{candidate.description}</span>
+                          <small>{metaParts.join(' · ')}</small>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={modalBusy}
+                          onClick={() => {
+                            const amountCents = parseSignedBRLInputToCents(
+                              searchLinkAmount,
+                            )
+                            if (amountCents === null || amountCents === 0) {
+                              onError(
+                                'Informe um valor válido para o Organizze',
+                              )
+                              return
+                            }
+                            void link(searchItem, candidate, { amountCents })
+                          }}
+                        >
+                          {linkingThis ? (
+                            <>
+                              <span className="spinner sm" aria-hidden />
+                              Vinculando…
+                            </>
+                          ) : (
+                            'Vincular'
+                          )}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )}
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={modalBusy}
+                onClick={closeSearchModal}
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
         </BottomSheet>
       ) : null}
 
