@@ -106,6 +106,10 @@ Em produção, a SPA pode ficar pública; a API sensível continua autenticada. 
 - `GET /api/pluggy/accounts`
 - `GET /api/pluggy/transactions?accountId=...&dateFrom=&dateTo=`
 
+### Relatórios
+- `GET /api/investments/overview`
+- `GET /api/installments/overview?month=YYYY-MM`
+
 ### Settings
 - `GET /api/settings`
 - `PUT /api/settings` `{ amountTolerancePercent?, dateToleranceDays?, accountMaps? }`

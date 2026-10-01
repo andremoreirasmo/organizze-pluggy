@@ -30,10 +30,21 @@ export type PluggyInvestmentView = {
   balanceCents: number;
   amountProfit: number | null;
   amountOriginal: number | null;
+  amount: number | null;
+  quantity: number | null;
+  dueDate: string | null;
+  issueDate: string | null;
+  purchaseDate: string | null;
+  rate: number | null;
+  rateType: string | null;
+  fixedAnnualRate: number | null;
+  lastTwelveMonthsRate: number | null;
   status: string | null;
   currencyCode: string | null;
   connectionId: string | null;
   connectionName: string | null;
+  connectionImageUrl: string | null;
+  connectionPrimaryColor: string | null;
 };
 
 export type StoredConnection = {
@@ -460,10 +471,43 @@ export class PluggyService {
             typeof investment.amountOriginal === 'number'
               ? investment.amountOriginal
               : null,
+          amount:
+            typeof investment.amount === 'number' ? investment.amount : null,
+          quantity:
+            typeof investment.quantity === 'number'
+              ? investment.quantity
+              : null,
+          dueDate: investment.dueDate
+            ? new Date(investment.dueDate).toISOString().slice(0, 10)
+            : null,
+          issueDate: investment.issueDate
+            ? new Date(investment.issueDate).toISOString().slice(0, 10)
+            : null,
+          purchaseDate: investment.purchaseDate
+            ? new Date(investment.purchaseDate).toISOString().slice(0, 10)
+            : null,
+          rate: typeof investment.rate === 'number' ? investment.rate : null,
+          rateType: investment.rateType ?? null,
+          fixedAnnualRate:
+            typeof investment.fixedAnnualRate === 'number'
+              ? investment.fixedAnnualRate
+              : null,
+          lastTwelveMonthsRate:
+            typeof investment.lastTwelveMonthsRate === 'number'
+              ? investment.lastTwelveMonthsRate
+              : null,
           status,
           currencyCode: investment.currencyCode ?? null,
           connectionId: connection.id,
           connectionName: connection.displayName,
+          connectionImageUrl:
+            connection.institutionImageUrl ||
+            connection.connectorImageUrl ||
+            null,
+          connectionPrimaryColor:
+            connection.institutionPrimaryColor ||
+            connection.connectorPrimaryColor ||
+            null,
         });
       }
     }

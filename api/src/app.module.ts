@@ -13,6 +13,8 @@ import { InstitutionModule } from './institution/institution.module';
 import { SettingsModule } from './settings/settings.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { BalancesModule } from './balances/balances.module';
+import { InvestmentsModule } from './investments/investments.module';
+import { InstallmentsModule } from './installments/installments.module';
 import { validateEnv } from './config/env.validation';
 
 @Module({
@@ -37,6 +39,8 @@ import { validateEnv } from './config/env.validation';
     SettingsModule,
     ReconciliationModule,
     BalancesModule,
+    InvestmentsModule,
+    InstallmentsModule,
   ],
   providers: [
     {

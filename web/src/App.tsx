@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { BalancesView } from './BalancesView'
+import { DashboardView } from './DashboardView'
 import { ReconciliationView } from './ReconciliationView'
 
 type OrganizzeAccount = {
@@ -102,7 +103,7 @@ type OrganizzeCreditCard = {
   archived: boolean
 }
 
-type View = 'reconcile' | 'balances' | 'settings'
+type View = 'reconcile' | 'balances' | 'dashboard' | 'settings'
 
 type GoogleCredentialResponse = {
   credential?: string
@@ -623,6 +624,11 @@ function App() {
     setView('balances')
   }, [])
 
+  const openDashboard = useCallback(() => {
+    setError(null)
+    setView('dashboard')
+  }, [])
+
   const authenticatedFetch = useCallback(
     <T,>(path: string, init?: RequestInit) => apiFetch<T>(path, init),
     [],
@@ -1115,6 +1121,14 @@ function App() {
           </button>
           <button
             type="button"
+            className={`btn ghost ${view === 'dashboard' ? 'active-nav' : ''}`}
+            onClick={openDashboard}
+          >
+            <span className="nav-label-full">Relatórios</span>
+            <span className="nav-label-short">Relat.</span>
+          </button>
+          <button
+            type="button"
             className={`btn ghost ${view === 'settings' ? 'active-nav' : ''}`}
             onClick={() => void openSettings()}
           >
@@ -1137,6 +1151,8 @@ function App() {
           />
         ) : view === 'balances' ? (
           <BalancesView apiFetch={authenticatedFetch} onError={setError} />
+        ) : view === 'dashboard' ? (
+          <DashboardView apiFetch={authenticatedFetch} onError={setError} />
         ) : (
           <section className="settings">
             <div className="hero-panel">
