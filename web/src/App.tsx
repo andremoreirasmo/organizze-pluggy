@@ -104,8 +104,71 @@ type OrganizzeCreditCard = {
 
 type View = 'reconcile' | 'balances' | 'settings'
 
-function authHeader(user: string, password: string): string {
-  return `Basic ${btoa(`${user}:${password}`)}`
+type GoogleCredentialResponse = {
+  credential?: string
+}
+
+type GoogleAccountsId = {
+  initialize: (config: {
+    client_id: string
+    callback: (response: GoogleCredentialResponse) => void
+    auto_select?: boolean
+    cancel_on_tap_outside?: boolean
+  }) => void
+  renderButton: (
+    parent: HTMLElement,
+    options: {
+      theme?: 'outline' | 'filled_blue' | 'filled_black'
+      size?: 'large' | 'medium' | 'small'
+      text?: 'signin_with' | 'continue_with' | 'signup_with'
+      shape?: 'rectangular' | 'pill' | 'circle' | 'square'
+      width?: number
+      locale?: string
+    },
+  ) => void
+}
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: GoogleAccountsId
+      }
+    }
+  }
+}
+
+function loadGoogleIdentityScript(): Promise<void> {
+  if (window.google?.accounts?.id) {
+    return Promise.resolve()
+  }
+  const existing = document.querySelector<HTMLScriptElement>(
+    'script[data-google-gsi="true"]',
+  )
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      existing.addEventListener('load', () => resolve(), { once: true })
+      existing.addEventListener(
+        'error',
+        () => reject(new Error('Falha ao carregar Google Identity Services')),
+        { once: true },
+      )
+    })
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://accounts.google.com/gsi/client'
+    script.async = true
+    script.defer = true
+    script.dataset.googleGsi = 'true'
+    script.addEventListener('load', () => resolve(), { once: true })
+    script.addEventListener(
+      'error',
+      () => reject(new Error('Falha ao carregar Google Identity Services')),
+      { once: true },
+    )
+    document.head.appendChild(script)
+  })
 }
 
 function pluggyAccountLast4(account: PluggyAccount): string | null {
@@ -149,16 +212,68 @@ function formatPluggyMapLabel(account: PluggyAccount): string {
   return account.name
 }
 
-async function apiFetch<T>(
-  path: string,
-  user: string,
-  password: string,
-  init?: RequestInit,
-): Promise<T> {
+type UnauthorizedHandler = () => void
+
+let unauthorizedHandler: UnauthorizedHandler | null = null
+let suppressUnauthorizedHandler = false
+
+function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
+  unauthorizedHandler = handler
+}
+
+function formatApiError(status: number, body: string): string {
+  let serverMessage: string | null = null
+  try {
+    const parsed = JSON.parse(body) as { message?: string | string[] }
+    if (typeof parsed.message === 'string') {
+      serverMessage = parsed.message
+    } else if (Array.isArray(parsed.message)) {
+      serverMessage = parsed.message.filter(Boolean).join(', ')
+    }
+  } catch {
+    const trimmed = body.trim()
+    if (trimmed && !trimmed.startsWith('{')) {
+      serverMessage = trimmed.slice(0, 200)
+    }
+  }
+
+  const friendlyByMessage: Record<string, string> = {
+    'This Google account is not allowed':
+      'Esta conta Google não tem permissão para acessar o app.',
+    'Invalid Google ID token':
+      'Login Google inválido ou expirado. Tente de novo.',
+    'Google account email is not verified':
+      'Confirme o e-mail da conta Google e tente de novo.',
+    'Missing Google ID token':
+      'Não foi possível obter a credencial do Google.',
+    'Authentication required': 'Sessão expirada. Entre novamente.',
+    'Missing Origin or Referer': 'Requisição bloqueada (origem inválida).',
+    'Invalid request origin': 'Requisição bloqueada (origem inválida).',
+  }
+
+  if (serverMessage && friendlyByMessage[serverMessage]) {
+    return friendlyByMessage[serverMessage]
+  }
+  if (serverMessage) {
+    return serverMessage
+  }
+  if (status === 401) {
+    return 'Sessão expirada. Entre novamente.'
+  }
+  if (status === 403) {
+    return 'Acesso negado.'
+  }
+  if (status === 429) {
+    return 'Muitas tentativas. Aguarde um momento e tente de novo.'
+  }
+  return `Erro ${status}. Tente novamente.`
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: 'include',
     headers: {
-      Authorization: authHeader(user, password),
       Accept: 'application/json',
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...(init?.headers ?? {}),
@@ -166,8 +281,15 @@ async function apiFetch<T>(
   })
 
   if (!response.ok) {
+    if (
+      response.status === 401 &&
+      !path.startsWith('/api/auth/') &&
+      !suppressUnauthorizedHandler
+    ) {
+      unauthorizedHandler?.()
+    }
     const text = await response.text()
-    throw new Error(`${response.status}: ${text}`)
+    throw new Error(formatApiError(response.status, text))
   }
 
   if (response.status === 204) {
@@ -244,10 +366,11 @@ function BankAvatar({
 }
 
 function App() {
-  const [user, setUser] = useState(() => sessionStorage.getItem('appUser') ?? '')
-  const [password, setPassword] = useState(
-    () => sessionStorage.getItem('appPassword') ?? '',
-  )
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [googleClientId, setGoogleClientId] = useState<string | null>(null)
+  const [googleButtonHost, setGoogleButtonHost] =
+    useState<HTMLDivElement | null>(null)
   const [authenticated, setAuthenticated] = useState(false)
   const [view, setView] = useState<View>('reconcile')
   const [error, setError] = useState<string | null>(null)
@@ -278,10 +401,22 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const canLoad = useMemo(
-    () => user.trim().length > 0 && password.length > 0,
-    [user, password],
-  )
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthenticated((wasAuthenticated) => {
+        if (wasAuthenticated) {
+          setError('Sessão expirada. Entre novamente.')
+        }
+        return false
+      })
+      setSessionEmail(null)
+      setOrganizzeAccounts([])
+      setPluggyConnections([])
+      setConfigConnections([])
+      setView('reconcile')
+    })
+    return () => setUnauthorizedHandler(null)
+  }, [])
 
   const flatPluggyAccounts = useMemo(
     () =>
@@ -294,45 +429,154 @@ function App() {
     [pluggyConnections],
   )
 
-  const loadHomeData = useCallback(
-    async (authUser: string, authPassword: string) => {
-      const [accounts, pluggy] = await Promise.all([
-        apiFetch<OrganizzeAccount[]>(
-          '/api/organizze/accounts',
-          authUser,
-          authPassword,
-        ),
-        apiFetch<{ connections: PluggyConnection[] }>(
-          '/api/pluggy/connections',
-          authUser,
-          authPassword,
-        ),
-      ])
-      setOrganizzeAccounts(accounts)
-      setPluggyConnections(pluggy.connections)
-    },
-    [],
-  )
+  const loadHomeData = useCallback(async () => {
+    const [accounts, pluggy] = await Promise.all([
+      apiFetch<OrganizzeAccount[]>('/api/organizze/accounts'),
+      apiFetch<{ connections: PluggyConnection[] }>('/api/pluggy/connections'),
+    ])
+    setOrganizzeAccounts(accounts)
+    setPluggyConnections(pluggy.connections)
+  }, [])
 
   const loadConfig = useCallback(async () => {
     const rows = await apiFetch<StoredConnection[]>(
       '/api/pluggy/connections/config',
-      user,
-      password,
     )
     setConfigConnections(rows)
-  }, [user, password])
+  }, [])
 
-  const loadInstitutions = useCallback(
-    async (query?: string) => {
-      const path = query?.trim()
-        ? `/api/pluggy/institutions?q=${encodeURIComponent(query.trim())}`
-        : '/api/pluggy/institutions'
-      const rows = await apiFetch<InstitutionOption[]>(path, user, password)
-      setInstitutions(rows)
+  const loadInstitutions = useCallback(async (query?: string) => {
+    const path = query?.trim()
+      ? `/api/pluggy/institutions?q=${encodeURIComponent(query.trim())}`
+      : '/api/pluggy/institutions'
+    const rows = await apiFetch<InstitutionOption[]>(path)
+    setInstitutions(rows)
+  }, [])
+
+  const enterAuthenticatedSession = useCallback(
+    async (email: string) => {
+      setSessionEmail(email)
+      await loadHomeData()
+      setAuthenticated(true)
+      setView('reconcile')
     },
-    [user, password],
+    [loadHomeData],
   )
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const config = await apiFetch<{ googleClientId: string }>(
+          '/api/auth/config',
+        )
+        if (cancelled) {
+          return
+        }
+        setGoogleClientId(config.googleClientId)
+        try {
+          const me = await apiFetch<{ email: string | null }>('/api/auth/me')
+          if (cancelled) {
+            return
+          }
+          if (me.email) {
+            await enterAuthenticatedSession(me.email)
+          }
+        } catch {
+          // No session yet — stay on login.
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Não foi possível carregar a autenticação',
+          )
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthReady(true)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [enterAuthenticatedSession])
+
+  const handleGoogleCredential = useCallback(
+    async (response: GoogleCredentialResponse) => {
+      if (!response.credential) {
+        setError('Google não retornou credencial')
+        return
+      }
+      setError(null)
+      setLoading(true)
+      try {
+        const session = await apiFetch<{ email: string }>('/api/auth/google', {
+          method: 'POST',
+          body: JSON.stringify({ idToken: response.credential }),
+        })
+        await enterAuthenticatedSession(session.email)
+      } catch (err) {
+        setAuthenticated(false)
+        setSessionEmail(null)
+        setError(err instanceof Error ? err.message : 'Falha no login Google')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [enterAuthenticatedSession],
+  )
+
+  useEffect(() => {
+    if (authenticated || !authReady || !googleClientId || !googleButtonHost) {
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        await loadGoogleIdentityScript()
+        if (cancelled || !window.google?.accounts?.id) {
+          return
+        }
+        window.google.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: (response) => {
+            void handleGoogleCredential(response)
+          },
+          auto_select: false,
+          cancel_on_tap_outside: true,
+        })
+        googleButtonHost.innerHTML = ''
+        window.google.accounts.id.renderButton(googleButtonHost, {
+          theme: 'outline',
+          size: 'large',
+          text: 'signin_with',
+          shape: 'rectangular',
+          width: 320,
+          locale: 'pt-BR',
+        })
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Falha ao iniciar login Google',
+          )
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [
+    authenticated,
+    authReady,
+    googleClientId,
+    googleButtonHost,
+    handleGoogleCredential,
+  ])
 
   useEffect(() => {
     if (!authenticated || view !== 'settings') {
@@ -350,23 +594,6 @@ function App() {
     return () => window.clearTimeout(handle)
   }, [authenticated, view, institutionQuery, loadInstitutions])
 
-  const login = useCallback(async () => {
-    setError(null)
-    setLoading(true)
-    try {
-      await loadHomeData(user, password)
-      sessionStorage.setItem('appUser', user)
-      sessionStorage.setItem('appPassword', password)
-      setAuthenticated(true)
-      setView('reconcile')
-    } catch (err) {
-      setAuthenticated(false)
-      setError(err instanceof Error ? err.message : 'Falha no login')
-    } finally {
-      setLoading(false)
-    }
-  }, [user, password, loadHomeData])
-
   const openSettings = useCallback(async () => {
     setError(null)
     setView('settings')
@@ -376,18 +603,10 @@ function App() {
       const [, , settings, cards, investments] = await Promise.all([
         loadConfig(),
         loadInstitutions(),
-        apiFetch<AppSettings>('/api/settings', user, password),
-        apiFetch<OrganizzeCreditCard[]>(
-          '/api/organizze/credit-cards',
-          user,
-          password,
-        ),
-        apiFetch<PluggyInvestment[]>(
-          '/api/pluggy/investments',
-          user,
-          password,
-        ),
-        loadHomeData(user, password),
+        apiFetch<AppSettings>('/api/settings'),
+        apiFetch<OrganizzeCreditCard[]>('/api/organizze/credit-cards'),
+        apiFetch<PluggyInvestment[]>('/api/pluggy/investments'),
+        loadHomeData(),
       ])
       setOrganizzeCreditCards(cards)
       setAppSettings(settings)
@@ -397,7 +616,7 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }, [loadConfig, loadInstitutions, loadHomeData, user, password])
+  }, [loadConfig, loadInstitutions, loadHomeData])
 
   const openBalances = useCallback(() => {
     setError(null)
@@ -405,9 +624,8 @@ function App() {
   }, [])
 
   const authenticatedFetch = useCallback(
-    <T,>(path: string, init?: RequestInit) =>
-      apiFetch<T>(path, user, password, init),
-    [user, password],
+    <T,>(path: string, init?: RequestInit) => apiFetch<T>(path, init),
+    [],
   )
 
   const saveAccountMap = useCallback(
@@ -457,7 +675,7 @@ function App() {
             cardNicknames: nextCardNicknames,
           })
         }
-        const updated = await apiFetch<AppSettings>('/api/settings', user, password, {
+        const updated = await apiFetch<AppSettings>('/api/settings', {
           method: 'PUT',
           body: JSON.stringify({ accountMaps: nextMaps }),
         })
@@ -470,7 +688,7 @@ function App() {
         setSaving(false)
       }
     },
-    [appSettings, user, password],
+    [appSettings],
   )
 
   const saveBalanceMap = useCallback(
@@ -523,15 +741,10 @@ function App() {
             })
           }
         }
-        const updated = await apiFetch<AppSettings>(
-          '/api/settings',
-          user,
-          password,
-          {
-            method: 'PUT',
-            body: JSON.stringify({ balanceMaps: nextMaps }),
-          },
-        )
+        const updated = await apiFetch<AppSettings>('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ balanceMaps: nextMaps }),
+        })
         setAppSettings(updated)
       } catch (err) {
         setError(
@@ -543,7 +756,7 @@ function App() {
         setSaving(false)
       }
     },
-    [appSettings, user, password],
+    [appSettings],
   )
 
   const setInvestmentIncluded = useCallback(
@@ -709,7 +922,7 @@ function App() {
     setError(null)
     setSaving(true)
     try {
-      await apiFetch('/api/pluggy/connections', user, password, {
+      await apiFetch('/api/pluggy/connections', {
         method: 'POST',
         body: JSON.stringify({
           itemId: newItemId.trim(),
@@ -725,7 +938,7 @@ function App() {
       setSelectedInstitution(null)
       setAddConnectionOpen(false)
       await loadConfig()
-      await loadHomeData(user, password)
+      await loadHomeData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao adicionar banco')
     } finally {
@@ -735,8 +948,6 @@ function App() {
     newItemId,
     newCustomName,
     selectedInstitution,
-    user,
-    password,
     loadConfig,
     loadHomeData,
   ])
@@ -745,17 +956,17 @@ function App() {
     async (id: string, customName: string) => {
       setError(null)
       try {
-        await apiFetch(`/api/pluggy/connections/${id}`, user, password, {
+        await apiFetch(`/api/pluggy/connections/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ customName: customName.trim() || null }),
         })
         await loadConfig()
-        await loadHomeData(user, password)
+        await loadHomeData()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erro ao renomear')
       }
     },
-    [user, password, loadConfig, loadHomeData],
+    [loadConfig, loadHomeData],
   )
 
   const updateConnectionIcon = useCallback(
@@ -763,7 +974,7 @@ function App() {
       setError(null)
       setSaving(true)
       try {
-        await apiFetch(`/api/pluggy/connections/${id}`, user, password, {
+        await apiFetch(`/api/pluggy/connections/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({
             institutionName: institution.name,
@@ -773,14 +984,14 @@ function App() {
         })
         setIconPickerForId(null)
         await loadConfig()
-        await loadHomeData(user, password)
+        await loadHomeData()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erro ao trocar ícone')
       } finally {
         setSaving(false)
       }
     },
-    [user, password, loadConfig, loadHomeData],
+    [loadConfig, loadHomeData],
   )
 
   const deleteConnection = useCallback(
@@ -790,27 +1001,56 @@ function App() {
       }
       setError(null)
       try {
-        await apiFetch(`/api/pluggy/connections/${id}`, user, password, {
+        await apiFetch(`/api/pluggy/connections/${id}`, {
           method: 'DELETE',
         })
         await loadConfig()
-        await loadHomeData(user, password)
+        await loadHomeData()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erro ao remover')
       }
     },
-    [user, password, loadConfig, loadHomeData],
+    [loadConfig, loadHomeData],
   )
 
-  const logout = () => {
-    sessionStorage.removeItem('appUser')
-    sessionStorage.removeItem('appPassword')
+  const logout = useCallback(async () => {
+    suppressUnauthorizedHandler = true
+    setError(null)
+    try {
+      await apiFetch<{ ok: boolean }>('/api/auth/logout', { method: 'POST' })
+    } catch {
+      // Clear local state even if logout request fails.
+    }
+    setSessionEmail(null)
     setAuthenticated(false)
     setOrganizzeAccounts([])
     setPluggyConnections([])
     setConfigConnections([])
     setView('reconcile')
     setError(null)
+    window.setTimeout(() => {
+      suppressUnauthorizedHandler = false
+    }, 1000)
+  }, [])
+
+  if (!authReady) {
+    return (
+      <div className="login-page">
+        <div className="login-card">
+          <div className="brand">
+            <div className="brand-mark" aria-hidden>
+              o
+            </div>
+            <div className="brand-text">
+              <strong>organizze</strong>
+              <span>conexão pluggy</span>
+            </div>
+          </div>
+          <h1>Carregando…</h1>
+          <p className="subtitle">Verificando sessão.</p>
+        </div>
+      </div>
+    )
   }
 
   if (!authenticated) {
@@ -828,40 +1068,17 @@ function App() {
           </div>
           <h1>Acesse sua conta</h1>
           <p className="subtitle">
-            Use o usuário e senha do app para conciliar Open Finance com o
-            Organizze.
+            Entre com Google. Só e-mails autorizados podem usar o app.
           </p>
-          <form
-            className="login-form"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void login()
-            }}
-          >
-            <label>
-              Usuário
-              <input
-                value={user}
-                onChange={(event) => setUser(event.target.value)}
-                autoComplete="username"
-                placeholder="seu usuário"
-              />
-            </label>
-            <label>
-              Senha
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="current-password"
-                placeholder="••••••••"
-              />
-            </label>
+          <div className="login-form">
+            <div
+              className="google-signin"
+              ref={setGoogleButtonHost}
+              aria-label="Entrar com Google"
+            />
+            {loading ? <p className="login-status">Entrando…</p> : null}
             {error ? <p className="error">{error}</p> : null}
-            <button className="btn block" type="submit" disabled={!canLoad || loading}>
-              {loading ? 'Entrando…' : 'Entrar'}
-            </button>
-          </form>
+          </div>
         </div>
       </div>
     )
@@ -904,8 +1121,8 @@ function App() {
             <span className="nav-label-full">Configurações</span>
             <span className="nav-label-short">Config</span>
           </button>
-          <button type="button" className="btn ghost" onClick={logout}>
-            Sair
+          <button type="button" className="btn ghost" onClick={() => void logout()}>
+            Sair{sessionEmail ? ` · ${sessionEmail.split('@')[0]}` : ''}
           </button>
         </div>
       </header>

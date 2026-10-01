@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module';
-import { BasicAuthGuard } from './auth/basic-auth.guard';
+import { OriginCheckGuard } from './auth/origin-check.guard';
+import { SessionAuthGuard } from './auth/session-auth.guard';
 import { HealthModule } from './health/health.module';
 import { OrganizzeModule } from './organizze/organizze.module';
 import { PluggyModule } from './pluggy/pluggy.module';
@@ -20,6 +22,12 @@ import { validateEnv } from './config/env.validation';
       envFilePath: ['.env', '../.env'],
       validate: validateEnv,
     }),
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60_000,
+        limit: 120,
+      },
+    ]),
     AuthModule,
     HealthModule,
     PrismaModule,
@@ -33,7 +41,15 @@ import { validateEnv } from './config/env.validation';
   providers: [
     {
       provide: APP_GUARD,
-      useClass: BasicAuthGuard,
+      useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: OriginCheckGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: SessionAuthGuard,
     },
   ],
 })

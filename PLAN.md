@@ -162,7 +162,7 @@ Ou monólito Nest com `client/` na raiz — também válido e mais simples no in
 ### 5.1 Fluxo principal — conciliação
 
 ```text
-1. Usuário autentica no app (senha simples / Basic Auth no Cloud Run — ver §7)
+1. Usuário autentica no app (Google SSO + cookie — ver §7)
 2. Sync: buscar txs Pluggy (período) + txs Organizze do mês
 3. Filtrar Pluggy já linkadas ([pluggy:id] em notes) e já ignoradas (DB)
 4. Para cada tx Pluggy pendente:
@@ -227,7 +227,7 @@ UI dedicada: toggle “É pagamento de fatura?” → select cartão → select 
 | `PluggyModule` | Connect token, items, accounts, transactions |
 | `ReconciliationModule` | Matching, import, link, ignore, invoice payment |
 | `SettingsModule` | Mapeamento contas, tolerâncias |
-| `AuthModule` | HTTP Basic Auth (APP_USER / APP_PASSWORD) |
+| `AuthModule` | Google OIDC + cookie session (`GOOGLE_*`, `SESSION_SECRET`) |
 | `AppModule` | ServeStatic do build React |
 
 Endpoints MVP:
@@ -246,27 +246,26 @@ Endpoints MVP:
 
 ## 7. Segurança (uso pessoal) — DECIDIDO
 
-**Auth do app: HTTP Basic Auth** (usuário + senha únicos via env). Google SSO / IAP descartados — complexidade desnecessária para uso pessoal.
+**Auth do app: Google OIDC + allowlist** (ver `PLAN-security-sso.md`). Login via Google Identity Services; sessão em cookie HttpOnly assinado com `SESSION_SECRET`.
 
 Camadas:
 
 | Camada | Medida |
 |--------|--------|
-| Acesso ao app | Basic Auth (`APP_USER` + `APP_PASSWORD`) em todas as rotas exceto `/api/health` |
+| Acesso ao app | Google Sign-In + `GOOGLE_ALLOWED_EMAILS`; cookie `op_session` nas rotas `/api/*` (exceto health/auth públicos) |
 | Secrets | Secret Manager no GCP; nunca no frontend nem no git |
 | Credenciais externas | `ORGANIZZE_*` e `PLUGGY_*` só no servidor |
 | Transporte | HTTPS (Cloud Run default) |
-| Headers | Helmet (Nest), sem expor stack traces em prod |
-| Cloud Run | `max-instances: 1`, ingress preferencialmente público mas protegido pelo Basic Auth |
-| CORS | Same-origin (SPA servida pelo mesmo Nest) |
+| Headers | Helmet + CSP permitindo GIS (`accounts.google.com`) em prod |
+| Cloud Run | `max-instances: 1`; auth no app (cookie); SPA pode ficar pública |
+| CORS | Same-origin (SPA servida pelo mesmo Nest; Vite proxy em dev) |
 
 Secrets necessários:
 
-- `APP_USER`, `APP_PASSWORD`
+- `GOOGLE_CLIENT_ID`, `GOOGLE_ALLOWED_EMAILS`, `SESSION_SECRET` (≥ 32 chars)
 - `ORGANIZZE_EMAIL`, `ORGANIZZE_API_TOKEN`
 - `PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`
 - `DATABASE_URL`
-- `SESSION_SECRET` (se houver cookie; opcional com Basic puro)
 
 ---
 
@@ -285,7 +284,7 @@ Custo estimado uso esporádico: **R$ 0** dentro dos free tiers Cloud Run + Neon.
 
 ### Fase 0 — Bootstrap ✅
 - Scaffold Nest + React + Prisma + Dockerfile
-- Env example, healthcheck, **Basic Auth**
+- Env example, healthcheck, **Google SSO** (substituiu Basic Auth)
 
 ### Fase 1 — Integrações read-only ✅
 - Cliente Organizze: accounts, categories, transactions, credit cards/invoices
@@ -315,7 +314,7 @@ Custo estimado uso esporádico: **R$ 0** dentro dos free tiers Cloud Run + Neon.
 | Item | Decisão |
 |------|---------|
 | Frontend | React + Vite |
-| Auth | **HTTP Basic Auth** (sem Google SSO/IAP) — confirmado |
+| Auth | **Google OIDC + allowlist** (`PLAN-security-sso.md`) — confirmado |
 | Node | **nvm-windows** + Node 22 LTS (`nvm use 22.20.0`) |
 | Matching default | ±5% valor e ±5 dias (ajustável em settings) |
 | Credenciais Organizze/Pluggy | Usuário já possui |
@@ -336,7 +335,7 @@ Ainda pendente só na hora do deploy: e-mail Google a permitir (N/A), nome do pr
 | Cold start Cloud Run + Neon wake | UX com spinner “acordando…”; timeout generoso |
 | `notes` usado pelo usuário para texto livre | Append do marcador; parser regex tolerante |
 | Valores Pluggy em reais vs Organizze em centavos | Camada de conversão única no `OrganizzeModule` |
-| Basic Auth fraco se senha ruim | Senha longa gerada; HTTPS obrigatório; secrets no Secret Manager |
+| Conta Google fora da allowlist | `GOOGLE_ALLOWED_EMAILS`; 403 mesmo com token válido |
 
 ---
 

@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
-import { PassportModule } from '@nestjs/passport';
-import { BasicAuthGuard } from './basic-auth.guard';
-import { BasicStrategy } from './basic.strategy';
+import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { OriginCheckGuard } from './origin-check.guard';
+import { SessionAuthGuard } from './session-auth.guard';
 
 @Module({
-  imports: [PassportModule],
-  providers: [BasicStrategy, BasicAuthGuard],
-  exports: [BasicAuthGuard],
+  controllers: [AuthController],
+  providers: [AuthService, SessionAuthGuard, OriginCheckGuard],
+  exports: [AuthService, SessionAuthGuard, OriginCheckGuard],
 })
 export class AuthModule {}

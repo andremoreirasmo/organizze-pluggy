@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { NestExpressApplication } from '@nestjs/platform-express';
@@ -11,11 +12,30 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
+  const isProd = config.get('NODE_ENV') === 'production';
+
+  app.use(cookieParser());
 
   app.use(
     helmet({
-      contentSecurityPolicy:
-        process.env.NODE_ENV === 'production' ? undefined : false,
+      contentSecurityPolicy: isProd
+        ? {
+            useDefaults: true,
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: [
+                "'self'",
+                'https://accounts.google.com',
+                'https://apis.google.com',
+              ],
+              frameSrc: ["'self'", 'https://accounts.google.com'],
+              connectSrc: ["'self'", 'https://accounts.google.com'],
+              imgSrc: ["'self'", 'data:', 'https:'],
+              styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+              fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+            },
+          }
+        : false,
     }),
   );
 
@@ -31,7 +51,6 @@ async function bootstrap() {
     exclude: ['/'],
   });
 
-  const isProd = config.get('NODE_ENV') === 'production';
   const webDist = join(__dirname, '..', '..', 'web', 'dist');
 
   if (isProd && existsSync(webDist)) {

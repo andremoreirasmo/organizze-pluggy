@@ -51,3 +51,14 @@ enum ReviewDecisionType {
   IMPORTED
   INVOICE_PAYMENT
 }
+
+model AuthSession {
+  id                  String   @id @default(cuid())
+  tokenHash           String   @unique
+  email               String
+  createdAt           DateTime @default(now())
+  lastSeenAt          DateTime @default(now())
+  absoluteExpiresAt   DateTime
+
+  @@index([email])
+}

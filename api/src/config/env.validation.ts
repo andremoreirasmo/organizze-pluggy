@@ -1,6 +1,7 @@
 type EnvShape = {
-  APP_USER: string;
-  APP_PASSWORD: string;
+  GOOGLE_CLIENT_ID: string;
+  GOOGLE_ALLOWED_EMAILS: string;
+  SESSION_SECRET: string;
   PORT?: string;
   NODE_ENV?: string;
   ORGANIZZE_EMAIL: string;
@@ -13,8 +14,9 @@ type EnvShape = {
 
 export function validateEnv(config: Record<string, unknown>): EnvShape {
   const required = [
-    'APP_USER',
-    'APP_PASSWORD',
+    'GOOGLE_CLIENT_ID',
+    'GOOGLE_ALLOWED_EMAILS',
+    'SESSION_SECRET',
     'ORGANIZZE_EMAIL',
     'ORGANIZZE_API_TOKEN',
     'ORGANIZZE_USER_AGENT',
@@ -29,9 +31,15 @@ export function validateEnv(config: Record<string, unknown>): EnvShape {
     }
   }
 
+  const sessionSecret = String(config.SESSION_SECRET);
+  if (sessionSecret.length < 32) {
+    throw new Error('SESSION_SECRET must be at least 32 characters');
+  }
+
   return {
-    APP_USER: String(config.APP_USER),
-    APP_PASSWORD: String(config.APP_PASSWORD),
+    GOOGLE_CLIENT_ID: String(config.GOOGLE_CLIENT_ID),
+    GOOGLE_ALLOWED_EMAILS: String(config.GOOGLE_ALLOWED_EMAILS),
+    SESSION_SECRET: sessionSecret,
     PORT: config.PORT ? String(config.PORT) : undefined,
     NODE_ENV: config.NODE_ENV ? String(config.NODE_ENV) : undefined,
     ORGANIZZE_EMAIL: String(config.ORGANIZZE_EMAIL),
