@@ -84,6 +84,10 @@
   flex: 1;
 }
 
+.view-pane[hidden] {
+  display: none !important;
+}
+
 .hero-panel {
   background: var(--oz-surface);
   border: 1px solid var(--oz-border);
@@ -494,8 +498,249 @@
   gap: 1rem;
 }
 
+.settings-shell {
+  background: var(--oz-surface);
+  border: 1px solid var(--oz-border);
+  border-radius: 18px;
+  box-shadow: var(--oz-shadow);
+  overflow: hidden;
+  gap: 0;
+}
+
+.settings-header {
+  padding: 1.15rem 1.35rem 0;
+}
+
+.settings-header-top {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.settings-header-top h1 {
+  margin: 0;
+  flex: 1;
+  min-width: 8rem;
+  font-size: clamp(1.35rem, 2.2vw, 1.7rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--oz-ink);
+}
+
+.settings-header-copy {
+  margin: 0 0 0.85rem;
+  color: var(--oz-muted);
+  font-size: 0.9rem;
+}
+
+.settings-tabs {
+  margin-top: 0.15rem;
+}
+
+.settings-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.settings-tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: #eef1ec;
+  color: #5f6560;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.settings-tab-count.is-warn {
+  background: #fdece3;
+  color: #9a4b2a;
+}
+
+.settings-body {
+  padding: 1rem 1.15rem 1.25rem;
+  display: grid;
+  gap: 1rem;
+}
+
 .settings-panel {
   min-height: auto;
+  box-shadow: none;
+}
+
+.settings-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.settings-card {
+  background: #fff;
+  border: 1px solid #e6e4df;
+  border-radius: 14px;
+  padding: 0.95rem 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.settings-card.is-muted {
+  opacity: 0.72;
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.settings-card-meta {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-card-meta strong {
+  font-size: 0.98rem;
+  letter-spacing: -0.02em;
+}
+
+.settings-card-meta span {
+  font-size: 0.8rem;
+  color: var(--oz-muted);
+}
+
+.settings-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.settings-card .map-controls {
+  margin-left: 0;
+  width: 100%;
+}
+
+.settings-card .map-controls select {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.settings-card .map-controls .map-nickname {
+  flex: 1 1 8rem;
+  min-width: 0;
+  max-width: none;
+}
+
+.settings-section {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.settings-section-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.settings-section-head p {
+  margin: 0.2rem 0 0;
+  color: var(--oz-muted);
+  font-size: 0.82rem;
+}
+
+.map-children-block {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.map-children-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  border: 0;
+  background: #f4f6f2;
+  border-radius: 10px;
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 650;
+  color: #4a5048;
+  cursor: pointer;
+}
+
+.map-children-toggle:hover {
+  background: #e9eee4;
+}
+
+.map-children-summary {
+  color: var(--oz-muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.settings-card .map-children {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: 0.35rem;
+}
+
+.map-child-row {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.35rem 0.15rem;
+  border-radius: 0;
+  background: transparent;
+}
+
+.map-child-label {
+  font-size: 0.84rem;
+  font-weight: 650;
+  color: #4a5048;
+}
+
+.map-child-row .map-nickname {
+  width: 100%;
+  max-width: none;
+}
+
+@media (max-width: 720px) {
+  .settings-header {
+    padding: 0.95rem 0.95rem 0;
+  }
+
+  .settings-header-top h1 {
+    font-size: 1.3rem;
+    flex-basis: 100%;
+  }
+
+  .settings-header-top .btn,
+  .settings-header-top .reports-refresh {
+    min-height: 2.6rem;
+  }
+
+  .settings-body {
+    padding: 0.85rem 0.75rem 1rem;
+  }
+
+  .settings-card-actions .btn {
+    flex: 1;
+    min-height: 2.6rem;
+  }
 }
 
 .settings-form {
@@ -668,30 +913,11 @@
 .map-children {
   list-style: none;
   margin: 0;
-  padding: 0 0 0 1rem;
+  padding: 0;
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-  border-left: 2px solid #d9e4d1;
-}
-
-.map-child-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem 1rem;
-  align-items: center;
-  padding: 0.45rem 0.65rem;
-  border-radius: var(--oz-radius-sm);
-  background: #f7faf5;
-}
-
-.map-child-row .account-meta strong {
-  font-size: 0.92rem;
-}
-
-.map-child-row .map-controls {
-  margin-left: auto;
+  gap: 0.35rem;
 }
 
 .map-ignored-hint {
@@ -705,6 +931,11 @@
   max-width: 14rem;
   color: inherit;
   box-sizing: border-box;
+  border: 1px solid var(--oz-border);
+  border-radius: var(--oz-radius-sm);
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  background: #fff;
 }
 
 .map-nickname::placeholder {
@@ -723,7 +954,6 @@
 }
 
 .map-controls select,
-.map-controls .map-nickname,
 .recon-expand select,
 .recon-expand input,
 .month-picker input {
@@ -1741,7 +1971,7 @@
   }
 
   .map-controls select,
-  .map-controls .map-nickname,
+  .map-nickname,
   .recon-expand select,
   .recon-expand input,
   .month-picker input,
@@ -1759,17 +1989,8 @@
     max-width: none;
   }
 
-  .map-children {
-    padding-left: 0.65rem;
-  }
-
   .map-child-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .map-child-row .map-controls {
-    margin-left: 0;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
   }
 
   .config-row {

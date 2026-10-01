@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { BalancesView } from './BalancesView'
 import { BottomSheet } from './BottomSheet'
@@ -215,6 +215,21 @@ function formatPluggyMapLabel(account: PluggyAccount): string {
   return account.name
 }
 
+function formatPluggyKind(account: PluggyAccount): string {
+  const type = account.type.toUpperCase()
+  if (type === 'CREDIT') {
+    return 'Cartão'
+  }
+  if (type === 'BANK') {
+    const subtype = account.subtype?.toUpperCase() ?? ''
+    if (subtype.includes('SAVINGS')) {
+      return 'Poupança'
+    }
+    return 'Conta'
+  }
+  return account.type
+}
+
 type UnauthorizedHandler = () => void
 
 let unauthorizedHandler: UnauthorizedHandler | null = null
@@ -394,6 +409,14 @@ function App() {
     useState<InstitutionOption | null>(null)
   const [iconPickerForId, setIconPickerForId] = useState<string | null>(null)
   const [addConnectionOpen, setAddConnectionOpen] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<
+    'banks' | 'accounts' | 'balances'
+  >('banks')
+  const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [expandedMapChildren, setExpandedMapChildren] = useState<
+    Record<string, boolean>
+  >({})
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null)
   const [organizzeCreditCards, setOrganizzeCreditCards] = useState<
     OrganizzeCreditCard[]
@@ -403,6 +426,34 @@ function App() {
   >([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [visitedViews, setVisitedViews] = useState<Record<View, boolean>>({
+    reconcile: true,
+    balances: false,
+    dashboard: false,
+    settings: false,
+  })
+  const scrollByViewRef = useRef<Record<View, number>>({
+    reconcile: 0,
+    balances: 0,
+    dashboard: 0,
+    settings: 0,
+  })
+  const previousViewRef = useRef<View>(view)
+
+  useEffect(() => {
+    setVisitedViews((current) =>
+      current[view] ? current : { ...current, [view]: true },
+    )
+  }, [view])
+
+  useEffect(() => {
+    const previous = previousViewRef.current
+    if (previous !== view) {
+      scrollByViewRef.current[previous] = window.scrollY
+      previousViewRef.current = view
+      window.scrollTo(0, scrollByViewRef.current[view] ?? 0)
+    }
+  }, [view])
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
@@ -416,6 +467,13 @@ function App() {
       setOrganizzeAccounts([])
       setPluggyConnections([])
       setConfigConnections([])
+      setAppSettings(null)
+      setVisitedViews({
+        reconcile: true,
+        balances: false,
+        dashboard: false,
+        settings: false,
+      })
       setView('reconcile')
     })
     return () => setUnauthorizedHandler(null)
@@ -430,6 +488,47 @@ function App() {
         })),
       ),
     [pluggyConnections],
+  )
+
+  const settingsStats = useMemo(() => {
+    const maps = appSettings?.accountMaps ?? []
+    const mapped = flatPluggyAccounts.filter((account) => {
+      const map = maps.find((item) => item.pluggyAccountId === account.id)
+      return map && map.targetType !== 'ignored'
+    }).length
+    const ignored = flatPluggyAccounts.filter((account) => {
+      const map = maps.find((item) => item.pluggyAccountId === account.id)
+      return map?.targetType === 'ignored'
+    }).length
+    const pending = Math.max(0, flatPluggyAccounts.length - mapped - ignored)
+    return {
+      banks: configConnections.length,
+      mapped,
+      pending,
+      investments: pluggyInvestments.length,
+    }
+  }, [
+    appSettings,
+    flatPluggyAccounts,
+    configConnections.length,
+    pluggyInvestments.length,
+  ])
+
+  const renameTarget = useMemo(
+    () =>
+      renameTargetId
+        ? (configConnections.find((item) => item.id === renameTargetId) ?? null)
+        : null,
+    [configConnections, renameTargetId],
+  )
+
+  const iconPickerTarget = useMemo(
+    () =>
+      iconPickerForId
+        ? (configConnections.find((item) => item.id === iconPickerForId) ??
+          null)
+        : null,
+    [configConnections, iconPickerForId],
   )
 
   const loadHomeData = useCallback(async () => {
@@ -600,7 +699,9 @@ function App() {
   const openSettings = useCallback(async () => {
     setError(null)
     setView('settings')
-    setAppSettings(null)
+    if (appSettings) {
+      return
+    }
     setLoading(true)
     try {
       const [, , settings, cards, investments] = await Promise.all([
@@ -619,7 +720,7 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }, [loadConfig, loadInstitutions, loadHomeData])
+  }, [appSettings, loadConfig, loadInstitutions, loadHomeData])
 
   const refreshSettings = useCallback(async () => {
     setError(null)
@@ -986,15 +1087,20 @@ function App() {
   const renameConnection = useCallback(
     async (id: string, customName: string) => {
       setError(null)
+      setSaving(true)
       try {
         await apiFetch(`/api/pluggy/connections/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ customName: customName.trim() || null }),
         })
+        setRenameTargetId(null)
+        setRenameValue('')
         await loadConfig()
         await loadHomeData()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erro ao renomear')
+      } finally {
+        setSaving(false)
       }
     },
     [loadConfig, loadHomeData],
@@ -1057,6 +1163,13 @@ function App() {
     setOrganizzeAccounts([])
     setPluggyConnections([])
     setConfigConnections([])
+    setAppSettings(null)
+    setVisitedViews({
+      reconcile: true,
+      balances: false,
+      dashboard: false,
+      settings: false,
+    })
     setView('reconcile')
     setError(null)
     window.setTimeout(() => {
@@ -1176,170 +1289,222 @@ function App() {
       <main className="content">
         {error ? <p className="error-banner">{error}</p> : null}
 
-        {view === 'reconcile' ? (
-          <ReconciliationView
-            apiFetch={authenticatedFetch}
-            onError={setError}
-          />
-        ) : view === 'balances' ? (
-          <BalancesView apiFetch={authenticatedFetch} onError={setError} />
-        ) : view === 'dashboard' ? (
-          <DashboardView apiFetch={authenticatedFetch} onError={setError} />
-        ) : (
+        {visitedViews.reconcile ? (
+          <div
+            className="view-pane"
+            hidden={view !== 'reconcile'}
+            aria-hidden={view !== 'reconcile'}
+          >
+            <ReconciliationView
+              apiFetch={authenticatedFetch}
+              onError={setError}
+            />
+          </div>
+        ) : null}
+
+        {visitedViews.balances ? (
+          <div
+            className="view-pane"
+            hidden={view !== 'balances'}
+            aria-hidden={view !== 'balances'}
+          >
+            <BalancesView apiFetch={authenticatedFetch} onError={setError} />
+          </div>
+        ) : null}
+
+        {visitedViews.dashboard ? (
+          <div
+            className="view-pane"
+            hidden={view !== 'dashboard'}
+            aria-hidden={view !== 'dashboard'}
+          >
+            <DashboardView apiFetch={authenticatedFetch} onError={setError} />
+          </div>
+        ) : null}
+
+        {visitedViews.settings ? (
+          <div
+            className="view-pane"
+            hidden={view !== 'settings'}
+            aria-hidden={view !== 'settings'}
+          >
           <PullToRefresh
             onRefresh={refreshSettings}
             disabled={loading || saving}
           >
-          <section className="settings">
-            <div className="hero-panel">
-              <div>
-                <h1>
-                  Configurações de <em>bancos</em>
-                </h1>
-                <p>
-                  Gerencie conexões Pluggy, ícones e o mapeamento para o
-                  Organizze.
-                </p>
+          <section className="settings settings-shell">
+            <header className="settings-header">
+              <div className="settings-header-top">
+                <h1>Configurações</h1>
+                <button
+                  type="button"
+                  className="reports-refresh"
+                  disabled={loading || saving}
+                  onClick={() => void refreshSettings()}
+                >
+                  {loading ? 'Atualizando…' : 'Atualizar'}
+                </button>
+                {settingsSection === 'banks' ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={loading || saving}
+                    onClick={() => {
+                      setError(null)
+                      setNewItemId('')
+                      setNewCustomName('')
+                      setSelectedInstitution(null)
+                      setInstitutionQuery('')
+                      setAddConnectionOpen(true)
+                    }}
+                  >
+                    Adicionar
+                  </button>
+                ) : null}
               </div>
-            </div>
+              <p className="settings-header-copy">
+                Conexões Pluggy, mapeamento Organizze e fontes de saldo.
+              </p>
+              <div
+                className="reports-tabs settings-tabs"
+                role="tablist"
+                aria-label="Seção de configurações"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsSection === 'banks'}
+                  className={settingsSection === 'banks' ? 'active' : ''}
+                  onClick={() => setSettingsSection('banks')}
+                >
+                  Bancos
+                  <span className="settings-tab-count">{settingsStats.banks}</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsSection === 'accounts'}
+                  className={settingsSection === 'accounts' ? 'active' : ''}
+                  onClick={() => setSettingsSection('accounts')}
+                >
+                  Contas
+                  {settingsStats.pending > 0 ? (
+                    <span className="settings-tab-count is-warn">
+                      {settingsStats.pending}
+                    </span>
+                  ) : (
+                    <span className="settings-tab-count">
+                      {settingsStats.mapped}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsSection === 'balances'}
+                  className={settingsSection === 'balances' ? 'active' : ''}
+                  onClick={() => setSettingsSection('balances')}
+                >
+                  Saldos
+                  <span className="settings-tab-count">
+                    {settingsStats.investments}
+                  </span>
+                </button>
+              </div>
+            </header>
 
+            <div className="settings-body">
+            {settingsSection === 'banks' ? (
             <article className="panel settings-panel">
               <div className="panel-head">
                 <div>
                   <h2>Bancos salvos</h2>
-                  <p>{configConnections.length} conexão(ões) salva(s)</p>
+                  <p>
+                    {settingsStats.banks === 0
+                      ? 'Nenhuma conexão ainda'
+                      : `${settingsStats.banks} conexão(ões) Pluggy`}
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => {
-                    setError(null)
-                    setNewItemId('')
-                    setNewCustomName('')
-                    setSelectedInstitution(null)
-                    setInstitutionQuery('')
-                    setAddConnectionOpen(true)
-                  }}
-                >
-                  Adicionar conexão
-                </button>
               </div>
               <div className="panel-body">
                 {configConnections.length === 0 ? (
                   <div className="empty">
-                    <strong>Lista vazia</strong>
-                    <p>Clique em Adicionar conexão para cadastrar o primeiro banco.</p>
+                    <strong>Nenhum banco</strong>
+                    <p>
+                      Toque em Adicionar para cadastrar o itemId do MeuPluggy.
+                    </p>
                   </div>
                 ) : (
-                  <ul className="account-list">
+                  <ul className="settings-card-list">
                     {configConnections.map((connection) => (
-                      <li key={connection.id} className="config-item">
-                        <div className="config-row">
+                      <li key={connection.id} className="settings-card">
+                        <div className="settings-card-head">
                           <BankAvatar
                             name={connection.displayName}
                             imageUrl={bankImage(connection)}
                             color={bankColor(connection)}
                           />
-                          <div className="account-meta">
+                          <div className="settings-card-meta">
                             <strong>{connection.displayName}</strong>
+                            <span>
+                              {connection.institutionName
+                                ? connection.institutionName
+                                : 'Sem ícone selecionado'}
+                            </span>
                             <span className="mono">{connection.itemId}</span>
-                            {connection.institutionName ? (
-                              <span>Banco: {connection.institutionName}</span>
-                            ) : (
-                              <span>Sem ícone selecionado</span>
-                            )}
                           </div>
-                          <div className="config-actions">
-                            <button
-                              type="button"
-                              className="btn ghost"
-                              onClick={() =>
-                                setIconPickerForId((current) =>
-                                  current === connection.id
-                                    ? null
-                                    : connection.id,
-                                )
-                              }
-                            >
-                              {iconPickerForId === connection.id
-                                ? 'Fechar'
-                                : 'Trocar ícone'}
-                            </button>
-                            <button
-                              type="button"
-                              className="btn ghost"
-                              onClick={() => {
-                                const next = window.prompt(
-                                  'Apelido do banco (vazio remove o apelido)',
-                                  connection.customName ?? '',
-                                )
-                                if (next === null) return
-                                void renameConnection(connection.id, next)
-                              }}
-                            >
-                              Renomear
-                            </button>
-                            <button
-                              type="button"
-                              className="btn danger"
-                              onClick={() =>
-                                void deleteConnection(
-                                  connection.id,
-                                  connection.displayName,
-                                )
-                              }
-                            >
-                              Excluir
-                            </button>
-                          </div>
+                          <span
+                            className={`badge ${connection.institutionImageUrl ? 'kind-bank' : 'kind-invoice'}`}
+                          >
+                            {connection.institutionImageUrl
+                              ? 'Pronto'
+                              : 'Sem ícone'}
+                          </span>
                         </div>
-
-                        {iconPickerForId === connection.id ? (
-                          <div className="icon-picker nested-picker">
-                            <div className="icon-picker-head">
-                              <strong>Escolha o novo ícone</strong>
-                            </div>
-                            <input
-                              className="icon-search"
-                              value={institutionQuery}
-                              onChange={(event) =>
-                                setInstitutionQuery(event.target.value)
-                              }
-                              placeholder="Buscar banco…"
-                            />
-                            <div className="icon-grid">
-                              {institutions.map((institution) => (
-                                <button
-                                  key={institution.id}
-                                  type="button"
-                                  className="icon-option"
-                                  title={institution.name}
-                                  disabled={saving}
-                                  onClick={() =>
-                                    void updateConnectionIcon(
-                                      connection.id,
-                                      institution,
-                                    )
-                                  }
-                                >
-                                  <img
-                                    src={institution.imageUrl}
-                                    alt={institution.name}
-                                    width={40}
-                                    height={40}
-                                  />
-                                  <span>{institution.name}</span>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
+                        <div className="settings-card-actions">
+                          <button
+                            type="button"
+                            className="btn ghost"
+                            disabled={saving}
+                            onClick={() => {
+                              setRenameTargetId(connection.id)
+                              setRenameValue(connection.customName ?? '')
+                            }}
+                          >
+                            Renomear
+                          </button>
+                          <button
+                            type="button"
+                            className="btn ghost"
+                            disabled={saving}
+                            onClick={() => {
+                              setInstitutionQuery('')
+                              setIconPickerForId(connection.id)
+                            }}
+                          >
+                            Ícone
+                          </button>
+                          <button
+                            type="button"
+                            className="btn danger"
+                            disabled={saving}
+                            onClick={() =>
+                              void deleteConnection(
+                                connection.id,
+                                connection.displayName,
+                              )
+                            }
+                          >
+                            Excluir
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
             </article>
+            ) : null}
 
             {addConnectionOpen ? (
               <BottomSheet
@@ -1440,19 +1605,121 @@ function App() {
               </BottomSheet>
             ) : null}
 
-            <article className="panel settings-panel">
-              <div className="panel-head">
-                <div>
-                  <h2>Mapeamento de contas</h2>
-                  <p>
-                    Mapeie a conta/cartão pai no Organizze. Cartões físicos
-                    vinculados aparecem abaixo só para apelido.
-                    Use Ignorar para ocultar contas fora da conciliação.
-                  </p>
+            {renameTarget ? (
+              <BottomSheet
+                onClose={() => {
+                  if (!saving) {
+                    setRenameTargetId(null)
+                    setRenameValue('')
+                  }
+                }}
+                busy={saving}
+                labelledBy="rename-connection-title"
+                title="Renomear banco"
+                subtitle={`Apelido para ${renameTarget.displayName}. Deixe vazio para usar o nome padrão.`}
+              >
+                <div className="settings-form modal-body">
+                  <label>
+                    Apelido
+                    <input
+                      value={renameValue}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                      placeholder="Ex.: Nubank pessoal"
+                      maxLength={40}
+                      autoFocus
+                    />
+                  </label>
+                  <div className="modal-actions">
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      disabled={saving}
+                      onClick={() => {
+                        setRenameTargetId(null)
+                        setRenameValue('')
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={saving}
+                      onClick={() =>
+                        void renameConnection(renameTarget.id, renameValue)
+                      }
+                    >
+                      {saving ? 'Salvando…' : 'Salvar'}
+                    </button>
+                  </div>
                 </div>
+              </BottomSheet>
+            ) : null}
+
+            {iconPickerTarget ? (
+              <BottomSheet
+                onClose={() => {
+                  if (!saving) {
+                    setIconPickerForId(null)
+                  }
+                }}
+                busy={saving}
+                labelledBy="icon-picker-title"
+                title="Trocar ícone"
+                subtitle={`Escolha o banco para ${iconPickerTarget.displayName}`}
+              >
+                <div className="settings-form modal-body">
+                  <div className="icon-picker">
+                    <input
+                      className="icon-search"
+                      value={institutionQuery}
+                      onChange={(event) =>
+                        setInstitutionQuery(event.target.value)
+                      }
+                      placeholder="Buscar banco (Nubank, XP, Itaú…)"
+                      autoFocus
+                    />
+                    <div className="icon-grid">
+                      {institutions.map((institution) => (
+                        <button
+                          key={institution.id}
+                          type="button"
+                          className="icon-option"
+                          title={institution.name}
+                          disabled={saving}
+                          onClick={() =>
+                            void updateConnectionIcon(
+                              iconPickerTarget.id,
+                              institution,
+                            )
+                          }
+                        >
+                          <img
+                            src={institution.imageUrl}
+                            alt={institution.name}
+                            width={40}
+                            height={40}
+                          />
+                          <span>{institution.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </BottomSheet>
+            ) : null}
+
+            {settingsSection === 'accounts' ? (
+            <div className="settings-section">
+              <div className="settings-section-head">
+                <h2>Mapeamento de contas</h2>
+                <p>
+                  {settingsStats.pending > 0
+                    ? `${settingsStats.pending} pendente(s) · ${settingsStats.mapped} mapeada(s)`
+                    : `${settingsStats.mapped} conta(s) mapeada(s)`}
+                </p>
               </div>
-              <div className="panel-body">
-                {loading || !appSettings ? (
+              {loading || !appSettings ? (
                   <div className="empty loading-empty">
                     <span className="spinner lg" aria-hidden />
                     <strong>Carregando mapeamento…</strong>
@@ -1463,7 +1730,7 @@ function App() {
                     <p>Cadastre bancos acima e atualize a home.</p>
                   </div>
                 ) : (
-                  <ul className="account-list">
+                  <ul className="settings-card-list">
                     {flatPluggyAccounts.map((account) => {
                       const current = appSettings.accountMaps.find(
                         (map) => map.pluggyAccountId === account.id,
@@ -1475,23 +1742,52 @@ function App() {
                       const childCards = account.additionalCards ?? []
                       const hasChildCards =
                         isCredit && childCards.length > 0
+                      const childrenExpanded =
+                        expandedMapChildren[account.id] === true
+                      const statusLabel =
+                        targetType === 'ignored'
+                          ? 'Ignorada'
+                          : targetType
+                            ? 'Mapeada'
+                            : 'Pendente'
+                      const statusClass =
+                        targetType === 'ignored'
+                          ? 'kind-invoice'
+                          : targetType
+                            ? 'kind-bank'
+                            : 'kind-transfer'
+                      const nicknamedChildren = hasChildCards
+                        ? childCards.filter((card) => {
+                            const nick =
+                              current?.cardNicknames?.[card.number] ?? ''
+                            return Boolean(nick.trim())
+                          }).length
+                        : 0
                       return (
-                        <li key={account.id} className="config-row map-row">
-                          <div className="map-parent">
-                            <div className="account-meta">
+                        <li
+                          key={account.id}
+                          className={`settings-card map-card${targetType === 'ignored' ? ' is-muted' : ''}`}
+                        >
+                          <div className="settings-card-head">
+                            <div className="settings-card-meta">
                               <strong>{formatPluggyMapLabel(account)}</strong>
                               <span>
-                                {account.connectionName} · {account.type}
-                                {account.subtype ? `/${account.subtype}` : ''}
+                                {account.connectionName} ·{' '}
+                                {formatPluggyKind(account)}
                                 {hasChildCards
                                   ? ` · ${childCards.length} cartões`
                                   : ''}
                               </span>
                             </div>
-                            <div className="map-controls">
+                            <span className={`badge ${statusClass}`}>
+                              {statusLabel}
+                            </span>
+                          </div>
+                          <div className="map-controls">
                               <select
                                 value={targetType}
                                 disabled={saving}
+                                aria-label={`Tipo de mapeamento de ${account.name}`}
                                 onChange={(event) => {
                                   const nextType = event.target.value as
                                     | 'account'
@@ -1530,15 +1826,11 @@ function App() {
                                 </option>
                                 <option value="ignored">Ignorar</option>
                               </select>
-                              {targetType === 'ignored' ? (
-                                <span className="map-ignored-hint">
-                                  Fora da fila e do alerta
-                                </span>
-                              ) : null}
                               {targetType === 'account' ? (
                                 <select
                                   value={targetId}
                                   disabled={saving}
+                                  aria-label={`Conta Organizze de ${account.name}`}
                                   onChange={(event) =>
                                     void saveAccountMap(
                                       account.id,
@@ -1563,6 +1855,7 @@ function App() {
                                 <select
                                   value={targetId}
                                   disabled={saving}
+                                  aria-label={`Cartão Organizze de ${account.name}`}
                                   onChange={(event) =>
                                     void saveAccountMap(
                                       account.id,
@@ -1581,7 +1874,9 @@ function App() {
                                   ))}
                                 </select>
                               ) : null}
-                              {targetType && !hasChildCards ? (
+                              {targetType &&
+                              targetType !== 'ignored' &&
+                              !hasChildCards ? (
                                 <input
                                   className="map-nickname"
                                   type="text"
@@ -1605,74 +1900,85 @@ function App() {
                                 />
                               ) : null}
                             </div>
-                          </div>
-                          {hasChildCards ? (
-                            <ul className="map-children">
-                              {childCards.map((card) => {
-                                const nick =
-                                  current?.cardNicknames?.[card.number] ?? ''
-                                return (
-                                  <li
-                                    key={`${account.id}-${card.number}`}
-                                    className="map-child-row"
-                                  >
-                                    <div className="account-meta">
-                                      <strong>
-                                        Cartão · final {card.number}
-                                      </strong>
-                                      <span>
-                                        Vinculado ao cartão pai no Organizze
-                                      </span>
-                                    </div>
-                                    <div className="map-controls">
-                                      <input
-                                        className="map-nickname"
-                                        type="text"
-                                        maxLength={40}
-                                        disabled={saving || !targetType}
-                                        defaultValue={nick}
-                                        key={`${account.id}-${card.number}-nick-${nick}`}
-                                        placeholder={
-                                          targetType
-                                            ? 'Apelido'
-                                            : 'Mapeie o pai primeiro'
-                                        }
-                                        aria-label={`Apelido do cartão final ${card.number}`}
-                                        onBlur={(event) =>
-                                          void saveCardNickname(
-                                            account.id,
-                                            card.number,
-                                            event.target.value,
-                                          )
-                                        }
-                                        onKeyDown={(event) => {
-                                          if (event.key === 'Enter') {
-                                            event.currentTarget.blur()
+                          {hasChildCards && targetType && targetType !== 'ignored' ? (
+                            <div className="map-children-block">
+                              <button
+                                type="button"
+                                className="map-children-toggle"
+                                onClick={() =>
+                                  setExpandedMapChildren((currentExpanded) => ({
+                                    ...currentExpanded,
+                                    [account.id]: !childrenExpanded,
+                                  }))
+                                }
+                              >
+                                <span>
+                                  {childrenExpanded ? '▾' : '▸'} Apelidos dos
+                                  cartões
+                                </span>
+                                <span className="map-children-summary">
+                                  {nicknamedChildren}/{childCards.length}
+                                </span>
+                              </button>
+                              {childrenExpanded ? (
+                                <ul className="map-children">
+                                  {childCards.map((card) => {
+                                    const nick =
+                                      current?.cardNicknames?.[card.number] ??
+                                      ''
+                                    return (
+                                      <li
+                                        key={`${account.id}-${card.number}`}
+                                        className="map-child-row"
+                                      >
+                                        <span className="map-child-label">
+                                          Final {card.number}
+                                        </span>
+                                        <input
+                                          className="map-nickname"
+                                          type="text"
+                                          maxLength={40}
+                                          disabled={saving}
+                                          defaultValue={nick}
+                                          key={`${account.id}-${card.number}-nick-${nick}`}
+                                          placeholder="Apelido"
+                                          aria-label={`Apelido do cartão final ${card.number}`}
+                                          onBlur={(event) =>
+                                            void saveCardNickname(
+                                              account.id,
+                                              card.number,
+                                              event.target.value,
+                                            )
                                           }
-                                        }}
-                                      />
-                                    </div>
-                                  </li>
-                                )
-                              })}
-                            </ul>
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Enter') {
+                                              event.currentTarget.blur()
+                                            }
+                                          }}
+                                        />
+                                      </li>
+                                    )
+                                  })}
+                                </ul>
+                              ) : null}
+                            </div>
                           ) : null}
                         </li>
                       )
                     })}
                   </ul>
                 )}
-              </div>
-            </article>
+            </div>
+            ) : null}
 
+            {settingsSection === 'balances' ? (
             <article className="panel settings-panel">
               <div className="panel-head">
                 <div>
-                  <h2>Fontes de saldo (investments)</h2>
+                  <h2>Fontes de saldo</h2>
                   <p>
-                    Investments da mesma conexão Pluggy que uma conta corrente
-                    mapeada entram automaticamente na soma. Desmarque o
-                    checkbox para ignorar um investment específico.
+                    Investments entram na soma do saldo. Desmarque para
+                    ignorar um item específico.
                   </p>
                 </div>
               </div>
@@ -1691,7 +1997,7 @@ function App() {
                     </p>
                   </div>
                 ) : (
-                  <ul className="account-list">
+                  <ul className="settings-card-list">
                     {pluggyInvestments.map((investment) => {
                       const sourceKey = `investment:${investment.id}`
                       const current = appSettings.balanceMaps.find(
@@ -1704,10 +2010,10 @@ function App() {
                       return (
                         <li
                           key={investment.id}
-                          className="config-row map-row"
+                          className={`settings-card map-card${included ? '' : ' is-muted'}`}
                         >
-                          <div className="map-parent">
-                            <div className="account-meta">
+                          <div className="settings-card-head">
+                            <div className="settings-card-meta">
                               <label className="balance-source-toggle">
                                 <input
                                   type="checkbox"
@@ -1734,10 +2040,15 @@ function App() {
                                   'pt-BR',
                                   { style: 'currency', currency: 'BRL' },
                                 )}
-                                {!included ? ' · ignorado na soma' : ''}
                               </span>
                             </div>
-                            <div className="map-controls">
+                            <span
+                              className={`badge ${included ? 'kind-bank' : 'kind-invoice'}`}
+                            >
+                              {included ? 'Na soma' : 'Ignorado'}
+                            </span>
+                          </div>
+                          <div className="map-controls">
                               <select
                                 value={targetId}
                                 disabled={saving || !included}
@@ -1788,7 +2099,6 @@ function App() {
                                 />
                               ) : null}
                             </div>
-                          </div>
                         </li>
                       )
                     })}
@@ -1796,9 +2106,12 @@ function App() {
                 )}
               </div>
             </article>
+            ) : null}
+            </div>
           </section>
           </PullToRefresh>
-        )}
+          </div>
+        ) : null}
       </main>
     </div>
   )
