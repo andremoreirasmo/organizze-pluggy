@@ -95,6 +95,8 @@ export type AppSettings = {
   dateToleranceDays: number;
   accountMaps: AccountMap[];
   balanceMaps: BalanceMap[];
+  /** Soft keys of installment purchases hidden from Relatórios → Parcelas. */
+  ignoredInstallmentKeys: string[];
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -102,6 +104,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   dateToleranceDays: 5,
   accountMaps: [],
   balanceMaps: [],
+  ignoredInstallmentKeys: [],
 };
 
 function normalizeNickname(value: unknown): string | null {
@@ -352,7 +355,12 @@ function consolidateBalanceMaps(rawItems: unknown[]): BalanceMap[] {
 
 export function normalizeAppSettings(raw: unknown): AppSettings {
   if (!raw || typeof raw !== 'object') {
-    return { ...DEFAULT_APP_SETTINGS, accountMaps: [], balanceMaps: [] };
+    return {
+      ...DEFAULT_APP_SETTINGS,
+      accountMaps: [],
+      balanceMaps: [],
+      ignoredInstallmentKeys: [],
+    };
   }
 
   const data = raw as Partial<AppSettings>;
@@ -372,11 +380,22 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
   const balanceMaps = Array.isArray(data.balanceMaps)
     ? consolidateBalanceMaps(data.balanceMaps)
     : [];
+  const ignoredInstallmentKeys = Array.isArray(data.ignoredInstallmentKeys)
+    ? [
+        ...new Set(
+          data.ignoredInstallmentKeys
+            .filter((key): key is string => typeof key === 'string')
+            .map((key) => key.trim())
+            .filter((key) => key.length > 0 && key.length <= 200),
+        ),
+      ]
+    : [];
 
   return {
     amountTolerancePercent,
     dateToleranceDays,
     accountMaps,
     balanceMaps,
+    ignoredInstallmentKeys,
   };
 }

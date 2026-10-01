@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
 import { CreditCardPicker } from './CreditCardPicker'
 import {
@@ -6,6 +7,7 @@ import {
   formatInvoiceDate,
   invoiceOptionLabel,
 } from './InvoicePicker'
+import { PullToRefresh } from './PullToRefresh'
 
 export type ReconciliationKind =
   | 'bank'
@@ -857,6 +859,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
   return (
     <section className="settings recon-view">
+      <PullToRefresh
+        onRefresh={() => loadQueue()}
+        disabled={toolbarBusy}
+      >
       <div className="hero-panel">
         <div>
           <h1>
@@ -1121,73 +1127,39 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           })}
         </ul>
       )}
+      </PullToRefresh>
 
       {createItem ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={closeCreateModal}
+        <BottomSheet
+          onClose={closeCreateModal}
+          busy={modalBusy}
+          labelledBy="create-tx-title"
+          title={
+            createIsTransfer
+              ? 'Transferência entre contas'
+              : 'Criar lançamento'
+          }
+          subtitle={
+            createIsTransfer
+              ? 'Cria uma transferência no Organizze (saída + entrada) e grava o ID Pluggy nas observações.'
+              : 'Confira destino, valor e data antes de enviar ao Organizze.'
+          }
         >
-          <div
-            className="modal-card create-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="create-tx-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {modalBusy ? (
-              <div className="modal-loading" role="status">
-                <span className="spinner lg" aria-hidden />
-                <strong>
-                  {action?.kind === 'invoice'
-                    ? 'Registrando pagamento…'
-                    : action?.kind === 'transfer'
-                      ? 'Registrando transferência…'
-                      : 'Criando lançamento…'}
-                </strong>
-                <p>{action?.message}</p>
-              </div>
-            ) : null}
-
-            <div className="modal-head">
-              <div>
-                <h2 id="create-tx-title">
-                  {createIsTransfer
-                    ? 'Transferência entre contas'
-                    : 'Criar lançamento'}
-                </h2>
-                <p>
-                  {createIsTransfer
-                    ? 'Cria uma transferência no Organizze (saída + entrada) e grava o ID Pluggy nas observações.'
-                    : 'Confira destino, valor e data antes de enviar ao Organizze.'}
-                </p>
-              </div>
-              <button
-                type="button"
-                className="modal-close"
-                disabled={modalBusy}
-                onClick={closeCreateModal}
-                aria-label="Fechar"
-                title="Fechar"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 14 14"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M3 3l8 8M11 3L3 11"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
+          {modalBusy ? (
+            <div className="modal-loading" role="status">
+              <span className="spinner lg" aria-hidden />
+              <strong>
+                {action?.kind === 'invoice'
+                  ? 'Registrando pagamento…'
+                  : action?.kind === 'transfer'
+                    ? 'Registrando transferência…'
+                    : 'Criando lançamento…'}
+              </strong>
+              <p>{action?.message}</p>
             </div>
+          ) : null}
 
-            <div className="settings-form modal-body">
+          <div className="settings-form modal-body">
               <div className="create-destination" aria-label="Resumo do lançamento">
                 <div className="create-destination-row">
                   <span>Valor</span>
@@ -1408,60 +1380,22 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 )}
               </div>
             </div>
-          </div>
-        </div>
+        </BottomSheet>
       ) : null}
 
       {ignoredOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => {
+        <BottomSheet
+          onClose={() => {
             if (!restoringId) {
               setIgnoredOpen(false)
             }
           }}
+          busy={Boolean(restoringId)}
+          labelledBy="ignored-title"
+          className="ignored-modal"
+          title="Ignorados"
+          subtitle={`Lançamentos ignorados em ${formatMonthTitle(yearMonth)}. Restaurar coloca de volta na fila.`}
         >
-          <div
-            className="modal-card ignored-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="ignored-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-head">
-              <div>
-                <h2 id="ignored-title">Ignorados</h2>
-                <p>
-                  Lançamentos ignorados em {formatMonthTitle(yearMonth)}.
-                  Restaurar coloca de volta na fila.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="modal-close"
-                disabled={Boolean(restoringId)}
-                onClick={() => setIgnoredOpen(false)}
-                aria-label="Fechar"
-                title="Fechar"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 14 14"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M3 3l8 8M11 3L3 11"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            </div>
-
             <div className="modal-body ignored-body">
               {ignoredLoading ? (
                 <div className="empty loading-empty">
@@ -1543,8 +1477,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 </ul>
               )}
             </div>
-          </div>
-        </div>
+        </BottomSheet>
       ) : null}
     </section>
   )

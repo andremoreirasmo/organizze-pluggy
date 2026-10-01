@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { BalancesView } from './BalancesView'
+import { BottomSheet } from './BottomSheet'
 import { DashboardView } from './DashboardView'
+import { PullToRefresh } from './PullToRefresh'
 import { ReconciliationView } from './ReconciliationView'
 
 type OrganizzeAccount = {
@@ -619,6 +621,29 @@ function App() {
     }
   }, [loadConfig, loadInstitutions, loadHomeData])
 
+  const refreshSettings = useCallback(async () => {
+    setError(null)
+    setLoading(true)
+    try {
+      const [, , settings, cards, investments] = await Promise.all([
+        loadConfig(),
+        loadInstitutions(),
+        apiFetch<AppSettings>('/api/settings'),
+        apiFetch<OrganizzeCreditCard[]>('/api/organizze/credit-cards'),
+        apiFetch<PluggyInvestment[]>('/api/pluggy/investments'),
+        loadHomeData(),
+      ])
+      setOrganizzeCreditCards(cards)
+      setAppSettings(settings)
+      setPluggyInvestments(investments)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao carregar config')
+      throw err
+    } finally {
+      setLoading(false)
+    }
+  }, [loadConfig, loadInstitutions, loadHomeData])
+
   const openBalances = useCallback(() => {
     setError(null)
     setView('balances')
@@ -1102,7 +1127,7 @@ function App() {
             <span>↔ pluggy · conciliação</span>
           </div>
         </div>
-        <div className="topbar-actions">
+        <nav className="topbar-nav" aria-label="Navegação principal">
           <button
             type="button"
             className={`btn ghost ${view === 'reconcile' ? 'active-nav' : ''}`}
@@ -1135,10 +1160,17 @@ function App() {
             <span className="nav-label-full">Configurações</span>
             <span className="nav-label-short">Config</span>
           </button>
-          <button type="button" className="btn ghost" onClick={() => void logout()}>
+        </nav>
+        <button
+          type="button"
+          className="btn ghost topbar-logout"
+          onClick={() => void logout()}
+        >
+          <span className="nav-logout-full">
             Sair{sessionEmail ? ` · ${sessionEmail.split('@')[0]}` : ''}
-          </button>
-        </div>
+          </span>
+          <span className="nav-logout-short">Sair</span>
+        </button>
       </header>
 
       <main className="content">
@@ -1154,6 +1186,10 @@ function App() {
         ) : view === 'dashboard' ? (
           <DashboardView apiFetch={authenticatedFetch} onError={setError} />
         ) : (
+          <PullToRefresh
+            onRefresh={refreshSettings}
+            disabled={loading || saving}
+          >
           <section className="settings">
             <div className="hero-panel">
               <div>
@@ -1306,124 +1342,102 @@ function App() {
             </article>
 
             {addConnectionOpen ? (
-              <div
-                className="modal-backdrop"
-                role="presentation"
-                onClick={() => {
+              <BottomSheet
+                onClose={() => {
                   if (!saving) {
                     setAddConnectionOpen(false)
                   }
                 }}
+                busy={saving}
+                labelledBy="add-connection-title"
+                title="Adicionar conexão"
+                subtitle="Cole o itemId do dashboard Pluggy e selecione o ícone"
               >
-                <div
-                  className="modal-card"
-                  role="dialog"
-                  aria-modal="true"
-                  aria-labelledby="add-connection-title"
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <div className="modal-head">
-                    <div>
-                      <h2 id="add-connection-title">Adicionar conexão</h2>
-                      <p>
-                        Cole o itemId do dashboard Pluggy e selecione o ícone
-                      </p>
+                <div className="settings-form modal-body">
+                  <label>
+                    Item ID
+                    <input
+                      value={newItemId}
+                      onChange={(event) => setNewItemId(event.target.value)}
+                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                      autoFocus
+                    />
+                  </label>
+                  <label>
+                    Apelido (opcional)
+                    <input
+                      value={newCustomName}
+                      onChange={(event) =>
+                        setNewCustomName(event.target.value)
+                      }
+                      placeholder="Ex.: Nubank pessoal"
+                    />
+                  </label>
+
+                  <div className="icon-picker">
+                    <div className="icon-picker-head">
+                      <strong>Ícone do banco</strong>
+                      {selectedInstitution ? (
+                        <span>Selecionado: {selectedInstitution.name}</span>
+                      ) : (
+                        <span>Selecione um ícone abaixo</span>
+                      )}
                     </div>
+                    <input
+                      className="icon-search"
+                      value={institutionQuery}
+                      onChange={(event) =>
+                        setInstitutionQuery(event.target.value)
+                      }
+                      placeholder="Buscar banco (Nubank, XP, Itaú…)"
+                    />
+                    <div className="icon-grid">
+                      {institutions.map((institution) => {
+                        const selected =
+                          selectedInstitution?.id === institution.id
+                        return (
+                          <button
+                            key={institution.id}
+                            type="button"
+                            className={`icon-option ${selected ? 'selected' : ''}`}
+                            title={institution.name}
+                            onClick={() =>
+                              setSelectedInstitution(institution)
+                            }
+                          >
+                            <img
+                              src={institution.imageUrl}
+                              alt={institution.name}
+                              width={40}
+                              height={40}
+                            />
+                            <span>{institution.name}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="modal-actions">
                     <button
                       type="button"
                       className="btn ghost"
                       disabled={saving}
                       onClick={() => setAddConnectionOpen(false)}
                     >
-                      Fechar
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void addConnection()}
+                      disabled={saving || !selectedInstitution}
+                    >
+                      {saving ? 'Salvando…' : 'Adicionar banco'}
                     </button>
                   </div>
-                  <div className="settings-form modal-body">
-                    <label>
-                      Item ID
-                      <input
-                        value={newItemId}
-                        onChange={(event) => setNewItemId(event.target.value)}
-                        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                        autoFocus
-                      />
-                    </label>
-                    <label>
-                      Apelido (opcional)
-                      <input
-                        value={newCustomName}
-                        onChange={(event) =>
-                          setNewCustomName(event.target.value)
-                        }
-                        placeholder="Ex.: Nubank pessoal"
-                      />
-                    </label>
-
-                    <div className="icon-picker">
-                      <div className="icon-picker-head">
-                        <strong>Ícone do banco</strong>
-                        {selectedInstitution ? (
-                          <span>Selecionado: {selectedInstitution.name}</span>
-                        ) : (
-                          <span>Selecione um ícone abaixo</span>
-                        )}
-                      </div>
-                      <input
-                        className="icon-search"
-                        value={institutionQuery}
-                        onChange={(event) =>
-                          setInstitutionQuery(event.target.value)
-                        }
-                        placeholder="Buscar banco (Nubank, XP, Itaú…)"
-                      />
-                      <div className="icon-grid">
-                        {institutions.map((institution) => {
-                          const selected =
-                            selectedInstitution?.id === institution.id
-                          return (
-                            <button
-                              key={institution.id}
-                              type="button"
-                              className={`icon-option ${selected ? 'selected' : ''}`}
-                              title={institution.name}
-                              onClick={() =>
-                                setSelectedInstitution(institution)
-                              }
-                            >
-                              <img
-                                src={institution.imageUrl}
-                                alt={institution.name}
-                                width={40}
-                                height={40}
-                              />
-                              <span>{institution.name}</span>
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="modal-actions">
-                      <button
-                        type="button"
-                        className="btn ghost"
-                        disabled={saving}
-                        onClick={() => setAddConnectionOpen(false)}
-                      >
-                        Cancelar
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => void addConnection()}
-                        disabled={saving || !selectedInstitution}
-                      >
-                        {saving ? 'Salvando…' : 'Adicionar banco'}
-                      </button>
-                    </div>
-                  </div>
                 </div>
-              </div>
+              </BottomSheet>
             ) : null}
 
             <article className="panel settings-panel">
@@ -1783,6 +1797,7 @@ function App() {
               </div>
             </article>
           </section>
+          </PullToRefresh>
         )}
       </main>
     </div>

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
+import { PullToRefresh } from './PullToRefresh'
 
 export type BalanceSnapshotSource = {
   sourceKey: string
@@ -323,6 +325,10 @@ export function BalancesView({ apiFetch, onError }: Props) {
 
   return (
     <section className="balances">
+      <PullToRefresh
+        onRefresh={() => loadSnapshot()}
+        disabled={loading || saving}
+      >
       <div className="hero-panel">
         <div>
           <h1>
@@ -507,137 +513,113 @@ export function BalancesView({ apiFetch, onError }: Props) {
           ))}
         </ul>
       )}
+      </PullToRefresh>
 
       {adjustRow ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={closeAdjust}
+        <BottomSheet
+          onClose={closeAdjust}
+          busy={saving}
+          labelledBy="adjust-balance-title"
+          title="Ajustar saldo"
+          subtitle={`Cria um lançamento pago em “${adjustRow.organizzeAccountName}” para aproximar o saldo do Open Finance.`}
         >
-          <div
-            className="modal-card create-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="adjust-balance-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            {saving ? (
-              <div className="modal-loading" role="status">
-                <span className="spinner lg" aria-hidden />
-                <strong>Criando ajuste…</strong>
-                <p>Lançamento no Organizze para alinhar o saldo.</p>
-              </div>
-            ) : null}
+          {saving ? (
+            <div className="modal-loading" role="status">
+              <span className="spinner lg" aria-hidden />
+              <strong>Criando ajuste…</strong>
+              <p>Lançamento no Organizze para alinhar o saldo.</p>
+            </div>
+          ) : null}
 
-            <div className="modal-head">
-              <div>
-                <h2 id="adjust-balance-title">Ajustar saldo</h2>
-                <p>
-                  Cria um lançamento pago em “{adjustRow.organizzeAccountName}”
-                  para aproximar o saldo do Open Finance.
-                </p>
+          <div className="settings-form modal-body">
+            <div className="create-destination">
+              <div className="create-destination-row">
+                <span>Open Finance</span>
+                <strong>
+                  {formatBRL(adjustRow.openFinanceBalanceCents)}
+                </strong>
               </div>
+              <div className="create-destination-row">
+                <span>Organizze</span>
+                <strong>
+                  {formatBRL(adjustRow.organizzeBalanceCents)}
+                </strong>
+              </div>
+              <div className="create-destination-row">
+                <span>Diff sugerido</span>
+                <strong
+                  className={adjustRow.diffCents >= 0 ? 'pos' : 'neg'}
+                >
+                  {adjustRow.diffCents > 0 ? '+' : ''}
+                  {formatBRL(adjustRow.diffCents)}
+                </strong>
+              </div>
+            </div>
+
+            <label>
+              Valor do ajuste (R$)
+              <input
+                value={adjustAmount}
+                disabled={saving}
+                inputMode="decimal"
+                onChange={(event) => setAdjustAmount(event.target.value)}
+              />
+            </label>
+
+            <label>
+              Data
+              <input
+                type="date"
+                value={adjustDate}
+                disabled={saving}
+                onChange={(event) => setAdjustDate(event.target.value)}
+              />
+            </label>
+
+            <label>
+              Descrição
+              <input
+                value={adjustDescription}
+                disabled={saving}
+                onChange={(event) =>
+                  setAdjustDescription(event.target.value)
+                }
+              />
+            </label>
+
+            <label>
+              Categoria
+              <CategoryPicker
+                categories={categories}
+                value={adjustCategoryId}
+                amountCents={Math.round(
+                  (parseBRLInput(adjustAmount) ?? 0) * 100,
+                )}
+                disabled={saving}
+                onChange={setAdjustCategoryId}
+              />
+            </label>
+
+            <div className="modal-actions">
               <button
                 type="button"
-                className="modal-close"
+                className="btn ghost"
                 disabled={saving}
                 onClick={closeAdjust}
-                aria-label="Fechar"
               >
-                ×
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={saving}
+                onClick={() => void submitAdjust()}
+              >
+                Criar ajuste
               </button>
             </div>
-
-            <div className="settings-form modal-body">
-              <div className="create-destination">
-                <div className="create-destination-row">
-                  <span>Open Finance</span>
-                  <strong>
-                    {formatBRL(adjustRow.openFinanceBalanceCents)}
-                  </strong>
-                </div>
-                <div className="create-destination-row">
-                  <span>Organizze</span>
-                  <strong>
-                    {formatBRL(adjustRow.organizzeBalanceCents)}
-                  </strong>
-                </div>
-                <div className="create-destination-row">
-                  <span>Diff sugerido</span>
-                  <strong
-                    className={adjustRow.diffCents >= 0 ? 'pos' : 'neg'}
-                  >
-                    {adjustRow.diffCents > 0 ? '+' : ''}
-                    {formatBRL(adjustRow.diffCents)}
-                  </strong>
-                </div>
-              </div>
-
-              <label>
-                Valor do ajuste (R$)
-                <input
-                  value={adjustAmount}
-                  disabled={saving}
-                  inputMode="decimal"
-                  onChange={(event) => setAdjustAmount(event.target.value)}
-                />
-              </label>
-
-              <label>
-                Data
-                <input
-                  type="date"
-                  value={adjustDate}
-                  disabled={saving}
-                  onChange={(event) => setAdjustDate(event.target.value)}
-                />
-              </label>
-
-              <label>
-                Descrição
-                <input
-                  value={adjustDescription}
-                  disabled={saving}
-                  onChange={(event) =>
-                    setAdjustDescription(event.target.value)
-                  }
-                />
-              </label>
-
-              <label>
-                Categoria
-                <CategoryPicker
-                  categories={categories}
-                  value={adjustCategoryId}
-                  amountCents={Math.round(
-                    (parseBRLInput(adjustAmount) ?? 0) * 100,
-                  )}
-                  disabled={saving}
-                  onChange={setAdjustCategoryId}
-                />
-              </label>
-
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  className="btn ghost"
-                  disabled={saving}
-                  onClick={closeAdjust}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={saving}
-                  onClick={() => void submitAdjust()}
-                >
-                  Criar ajuste
-                </button>
-              </div>
-            </div>
           </div>
-        </div>
+        </BottomSheet>
       ) : null}
     </section>
   )

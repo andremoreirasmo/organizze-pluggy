@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OrganizzeService } from '../organizze/organizze.service';
 import type { OrganizzeTransaction } from '../organizze/organizze.types';
+import { SettingsService } from '../settings/settings.service';
 import type {
   InstallmentMonthBar,
   InstallmentNextPayoff,
@@ -379,13 +380,20 @@ function isoOnMonth(monthKey: string, day: number): string {
 export class InstallmentsService {
   private readonly logger = new Logger(InstallmentsService.name);
 
-  constructor(private readonly organizze: OrganizzeService) {}
+  constructor(
+    private readonly organizze: OrganizzeService,
+    private readonly settings: SettingsService,
+  ) {}
 
   async getOverview(focusMonth?: string): Promise<InstallmentsOverviewResponse> {
     const focus =
       focusMonth && /^\d{4}-\d{2}$/.test(focusMonth)
         ? focusMonth
         : currentMonthKeySaoPaulo();
+
+    const ignoredKeys = new Set(
+      (await this.settings.getSettings()).ignoredInstallmentKeys,
+    );
 
     const cards = await this.organizze.listCreditCards({
       includeArchived: true,
@@ -412,10 +420,12 @@ export class InstallmentsService {
       const clusters = clusterTransactions(txs);
       clusters.forEach((cluster, index) => {
         const purchase = this.buildPurchase(
+          softKey,
           `${softKey}|c:${index}`,
           cluster,
           focus,
           cardNameById,
+          ignoredKeys.has(softKey),
         );
         if (purchase) {
           purchases.push(purchase);
@@ -423,7 +433,7 @@ export class InstallmentsService {
       });
     }
 
-    const active = dedupePurchases(
+    const stillOpen = dedupePurchases(
       purchases.filter((purchase) => {
         if (purchase.paidCount >= purchase.totalInstallments) {
           return false;
@@ -433,9 +443,13 @@ export class InstallmentsService {
       }),
     );
 
-    active.sort(
-      (a, b) => b.installmentAmountCents - a.installmentAmountCents,
-    );
+    const active = stillOpen
+      .filter((purchase) => !purchase.ignored)
+      .sort((a, b) => b.installmentAmountCents - a.installmentAmountCents);
+
+    const ignoredPurchases = stillOpen
+      .filter((purchase) => purchase.ignored)
+      .sort((a, b) => b.installmentAmountCents - a.installmentAmountCents);
 
     let committedThisMonthCents = 0;
     for (const purchase of active) {
@@ -518,11 +532,38 @@ export class InstallmentsService {
       focusPaymentMonthLabel: focusMonthLabelPt(focusPaymentMonth),
       committedThisMonthCents,
       activePurchaseCount: active.length,
+      ignoredPurchaseCount: ignoredPurchases.length,
       monthlyBars,
       nextPayoff,
       payoffsThisMonth,
       purchases: active,
+      ignoredPurchases,
     };
+  }
+
+  async ignorePurchase(key: string): Promise<{ ignoredInstallmentKeys: string[] }> {
+    const trimmed = key.trim();
+    const current = await this.settings.getSettings();
+    if (!trimmed || current.ignoredInstallmentKeys.includes(trimmed)) {
+      return { ignoredInstallmentKeys: current.ignoredInstallmentKeys };
+    }
+    const updated = await this.settings.updateSettings({
+      ignoredInstallmentKeys: [...current.ignoredInstallmentKeys, trimmed],
+    });
+    return { ignoredInstallmentKeys: updated.ignoredInstallmentKeys };
+  }
+
+  async unignorePurchase(
+    key: string,
+  ): Promise<{ ignoredInstallmentKeys: string[] }> {
+    const trimmed = key.trim();
+    const current = await this.settings.getSettings();
+    const updated = await this.settings.updateSettings({
+      ignoredInstallmentKeys: current.ignoredInstallmentKeys.filter(
+        (item) => item !== trimmed,
+      ),
+    });
+    return { ignoredInstallmentKeys: updated.ignoredInstallmentKeys };
   }
 
   private async loadInstallmentTransactions(
@@ -610,10 +651,12 @@ export class InstallmentsService {
   }
 
   private buildPurchase(
+    ignoreKey: string,
     groupKey: string,
     txs: OrganizzeTransaction[],
     focusMonth: string,
     cardNameById: Map<number, string>,
+    ignored: boolean,
   ): InstallmentPurchase | null {
     if (txs.length === 0) {
       return null;
@@ -737,6 +780,8 @@ export class InstallmentsService {
 
     return {
       id: groupKey,
+      ignoreKey,
+      ignored,
       description: sample.description,
       creditCardId,
       creditCardName:

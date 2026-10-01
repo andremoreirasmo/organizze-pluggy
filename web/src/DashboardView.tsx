@@ -7,6 +7,7 @@ import {
   InvestmentsPanel,
   type InvestmentsOverviewResponse,
 } from './InvestmentsPanel'
+import { PullToRefresh } from './PullToRefresh'
 
 type ApiFetch = <T>(path: string, init?: RequestInit) => Promise<T>
 
@@ -104,6 +105,45 @@ export function DashboardView({ apiFetch, onError }: Props) {
     })
   }, [])
 
+  const ignorePurchase = useCallback(
+    async (ignoreKey: string) => {
+      onError(null)
+      try {
+        await apiFetch('/api/installments/ignore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: ignoreKey }),
+        })
+        failedMonthRef.current = null
+        setInstallments(null)
+      } catch (err) {
+        onError(
+          err instanceof Error ? err.message : 'Erro ao ignorar parcela',
+        )
+      }
+    },
+    [apiFetch, onError],
+  )
+
+  const unignorePurchase = useCallback(
+    async (ignoreKey: string) => {
+      onError(null)
+      try {
+        await apiFetch(
+          `/api/installments/ignore?key=${encodeURIComponent(ignoreKey)}`,
+          { method: 'DELETE' },
+        )
+        failedMonthRef.current = null
+        setInstallments(null)
+      } catch (err) {
+        onError(
+          err instanceof Error ? err.message : 'Erro ao restaurar parcela',
+        )
+      }
+    },
+    [apiFetch, onError],
+  )
+
   useEffect(() => {
     if (section !== 'installments') {
       if (!investments && !loading) {
@@ -133,8 +173,18 @@ export function DashboardView({ apiFetch, onError }: Props) {
 
   const monthTitle = formatMonthTitle(focusMonth)
 
+  const refresh = useCallback(async () => {
+    if (section === 'installments') {
+      failedMonthRef.current = null
+      await loadInstallments(focusMonth)
+      return
+    }
+    await loadInvestments()
+  }, [section, focusMonth, loadInstallments, loadInvestments])
+
   return (
     <section className="dashboard reports">
+      <PullToRefresh onRefresh={refresh} disabled={loading}>
       <div className="reports-shell">
         <header className="reports-header">
           <div className="reports-header-top">
@@ -174,14 +224,7 @@ export function DashboardView({ apiFetch, onError }: Props) {
               type="button"
               className="reports-refresh"
               disabled={loading}
-              onClick={() => {
-                if (section === 'installments') {
-                  failedMonthRef.current = null
-                  setInstallments(null)
-                } else {
-                  setInvestments(null)
-                }
-              }}
+              onClick={() => void refresh()}
             >
               {loading ? 'Atualizando…' : 'Atualizar'}
             </button>
@@ -225,6 +268,8 @@ export function DashboardView({ apiFetch, onError }: Props) {
               data={installments}
               loading={loading}
               onFocusMonthChange={changeFocusMonth}
+              onIgnorePurchase={ignorePurchase}
+              onUnignorePurchase={unignorePurchase}
             />
           ) : null}
           {section === 'investments' && investments ? (
@@ -232,6 +277,7 @@ export function DashboardView({ apiFetch, onError }: Props) {
           ) : null}
         </div>
       </div>
+      </PullToRefresh>
     </section>
   )
 }

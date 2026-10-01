@@ -13,6 +13,9 @@ export type InstallmentScheduleEntry = {
 
 export type InstallmentPurchase = {
   id: string;
+  /** Stable soft key used to ignore/restore across months. */
+  ignoreKey: string;
+  ignored: boolean;
   description: string;
   creditCardId: number;
   creditCardName: string;
@@ -57,10 +60,12 @@ export type InstallmentsOverviewResponse = {
   focusPaymentMonthLabel: string;
   committedThisMonthCents: number;
   activePurchaseCount: number;
+  ignoredPurchaseCount: number;
   monthlyBars: InstallmentMonthBar[];
   /** Soonest purchase by payment month. */
   nextPayoff: InstallmentNextPayoff | null;
   /** Purchases whose last invoice competence is the focus month. */
   payoffsThisMonth: InstallmentNextPayoff[];
   purchases: InstallmentPurchase[];
+  ignoredPurchases: InstallmentPurchase[];
 };

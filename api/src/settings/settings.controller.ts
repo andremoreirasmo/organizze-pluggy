@@ -84,6 +84,11 @@ class UpdateSettingsDto {
   @ValidateNested({ each: true })
   @Type(() => BalanceMapDto)
   balanceMaps?: BalanceMapDto[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  ignoredInstallmentKeys?: string[];
 }
 
 @Controller('settings')

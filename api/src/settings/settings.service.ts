@@ -31,7 +31,12 @@ export class SettingsService {
       where: { id: SETTINGS_ID },
     });
     if (!row) {
-      return { ...DEFAULT_APP_SETTINGS, accountMaps: [], balanceMaps: [] };
+      return {
+        ...DEFAULT_APP_SETTINGS,
+        accountMaps: [],
+        balanceMaps: [],
+        ignoredInstallmentKeys: [],
+      };
     }
     return normalizeAppSettings(row.data);
   }
@@ -46,6 +51,10 @@ export class SettingsService {
         input.accountMaps !== undefined ? input.accountMaps : current.accountMaps,
       balanceMaps:
         input.balanceMaps !== undefined ? input.balanceMaps : current.balanceMaps,
+      ignoredInstallmentKeys:
+        input.ignoredInstallmentKeys !== undefined
+          ? input.ignoredInstallmentKeys
+          : current.ignoredInstallmentKeys,
     });
 
     if (
