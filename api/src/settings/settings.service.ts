@@ -31,7 +31,7 @@ export class SettingsService {
       where: { id: SETTINGS_ID },
     });
     if (!row) {
-      return { ...DEFAULT_APP_SETTINGS, accountMaps: [] };
+      return { ...DEFAULT_APP_SETTINGS, accountMaps: [], balanceMaps: [] };
     }
     return normalizeAppSettings(row.data);
   }
@@ -44,6 +44,8 @@ export class SettingsService {
       ...input,
       accountMaps:
         input.accountMaps !== undefined ? input.accountMaps : current.accountMaps,
+      balanceMaps:
+        input.balanceMaps !== undefined ? input.balanceMaps : current.balanceMaps,
     });
 
     if (
@@ -58,14 +60,24 @@ export class SettingsService {
       throw new BadRequestException('dateToleranceDays must be between 0 and 30');
     }
 
-    const seen = new Set<string>();
+    const seenAccounts = new Set<string>();
     for (const map of merged.accountMaps) {
-      if (seen.has(map.pluggyAccountId)) {
+      if (seenAccounts.has(map.pluggyAccountId)) {
         throw new BadRequestException(
           `Duplicate mapping for Pluggy account ${map.pluggyAccountId}`,
         );
       }
-      seen.add(map.pluggyAccountId);
+      seenAccounts.add(map.pluggyAccountId);
+    }
+
+    const seenBalance = new Set<string>();
+    for (const map of merged.balanceMaps) {
+      if (seenBalance.has(map.sourceKey)) {
+        throw new BadRequestException(
+          `Duplicate balance mapping for ${map.sourceKey}`,
+        );
+      }
+      seenBalance.add(map.sourceKey);
     }
 
     await this.prisma.setting.upsert({

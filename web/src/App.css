@@ -1679,3 +1679,159 @@
   }
 }
 
+/* —— Saldos —— */
+.balances .hero-panel {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.balance-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.balance-card {
+  background: #fff;
+  border: 1px solid #e6e4df;
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.balance-card.is-diverged {
+  border-color: #e8c4b0;
+}
+
+.balance-card.is-ok {
+  border-color: #cfe3d4;
+}
+
+.balance-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.balance-card-head > div {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.balance-card-head strong {
+  font-size: 1.05rem;
+}
+
+.balance-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.balance-grid > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.balance-grid span {
+  font-size: 0.78rem;
+  color: #6b6a66;
+}
+
+.balance-grid strong {
+  font-size: 0.98rem;
+}
+
+.balance-grid strong.pos {
+  color: #1f6b3a;
+}
+
+.balance-grid strong.neg {
+  color: #b42318;
+}
+
+.balance-sources {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.balance-sources-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #7a7872;
+}
+
+.balance-sources ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.balance-sources li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.86rem;
+  color: #4a4945;
+  background: #f7f6f2;
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+}
+
+.balance-sources li.is-excluded {
+  opacity: 0.72;
+  background: #efeeea;
+}
+
+.balance-sources li.is-excluded .balance-source-toggle span {
+  color: #7a7872;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.balance-sources li strong {
+  white-space: nowrap;
+}
+
+.balance-sources li strong.muted {
+  color: #9a9690;
+  font-weight: 500;
+}
+
+.balance-source-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.balance-source-toggle input {
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+}
+
+@media (max-width: 720px) {
+  .balances .hero-panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .balance-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .balance-card-head {
+    flex-direction: column;
+  }
+}
+

@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Put } from '@nestjs/common';
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsNumber,
   IsOptional,
@@ -12,7 +13,10 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { SettingsService } from './settings.service';
-import type { AccountMapTargetType } from './settings.types';
+import type {
+  AccountMapTargetType,
+  BalanceSourceKind,
+} from './settings.types';
 
 class AccountMapDto {
   @IsString()
@@ -33,6 +37,29 @@ class AccountMapDto {
   cardNicknames?: Record<string, string> | null;
 }
 
+class BalanceMapDto {
+  @IsString()
+  sourceKey!: string;
+
+  @IsIn(['account', 'investment', 'reserved'])
+  sourceKind!: BalanceSourceKind;
+
+  @IsString()
+  pluggySourceId!: string;
+
+  @IsNumber()
+  organizzeAccountId!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  nickname?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+}
+
 class UpdateSettingsDto {
   @IsOptional()
   @IsNumber()
@@ -51,6 +78,12 @@ class UpdateSettingsDto {
   @ValidateNested({ each: true })
   @Type(() => AccountMapDto)
   accountMaps?: AccountMapDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => BalanceMapDto)
+  balanceMaps?: BalanceMapDto[];
 }
 
 @Controller('settings')

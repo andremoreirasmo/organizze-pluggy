@@ -9,6 +9,19 @@ export type OrganizzeAccount = {
   institutionPrimaryColor?: string | null;
 };
 
+/** Response from GET /balances (monetary fields are integers in cents). */
+export type OrganizzeBalancesResponse = {
+  previous_balance: number;
+  previous_predicted_balance: number;
+  balance: number;
+  predicted_balance: number;
+  outcomes: number;
+  incomes: number;
+  expenses: number;
+  earnings: number;
+  result: number;
+};
+
 export type OrganizzeCategoryKind = 'expenses' | 'earnings' | 'none';
 
 export type OrganizzeCategory = {

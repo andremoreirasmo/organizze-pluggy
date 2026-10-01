@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
+import { BalancesView } from './BalancesView'
 import { ReconciliationView } from './ReconciliationView'
 
 type OrganizzeAccount = {
@@ -65,10 +66,34 @@ type AccountMap = {
   cardNicknames?: Record<string, string> | null
 }
 
+type BalanceMap = {
+  sourceKey: string
+  sourceKind: 'account' | 'investment' | 'reserved'
+  pluggySourceId: string
+  organizzeAccountId: number
+  nickname?: string | null
+  enabled?: boolean
+}
+
 type AppSettings = {
   amountTolerancePercent: number
   dateToleranceDays: number
   accountMaps: AccountMap[]
+  balanceMaps: BalanceMap[]
+}
+
+type PluggyInvestment = {
+  id: string
+  itemId: string
+  name: string
+  type: string
+  subtype: string | null
+  balance: number
+  balanceCents: number
+  amountProfit: number | null
+  status: string | null
+  connectionId: string | null
+  connectionName: string | null
 }
 
 type OrganizzeCreditCard = {
@@ -77,7 +102,7 @@ type OrganizzeCreditCard = {
   archived: boolean
 }
 
-type View = 'reconcile' | 'settings'
+type View = 'reconcile' | 'balances' | 'settings'
 
 function authHeader(user: string, password: string): string {
   return `Basic ${btoa(`${user}:${password}`)}`
@@ -247,6 +272,9 @@ function App() {
   const [organizzeCreditCards, setOrganizzeCreditCards] = useState<
     OrganizzeCreditCard[]
   >([])
+  const [pluggyInvestments, setPluggyInvestments] = useState<
+    PluggyInvestment[]
+  >([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -345,7 +373,7 @@ function App() {
     setAppSettings(null)
     setLoading(true)
     try {
-      const [, , settings, cards] = await Promise.all([
+      const [, , settings, cards, investments] = await Promise.all([
         loadConfig(),
         loadInstitutions(),
         apiFetch<AppSettings>('/api/settings', user, password),
@@ -354,16 +382,27 @@ function App() {
           user,
           password,
         ),
+        apiFetch<PluggyInvestment[]>(
+          '/api/pluggy/investments',
+          user,
+          password,
+        ),
         loadHomeData(user, password),
       ])
       setOrganizzeCreditCards(cards)
       setAppSettings(settings)
+      setPluggyInvestments(investments)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar config')
     } finally {
       setLoading(false)
     }
   }, [loadConfig, loadInstitutions, loadHomeData, user, password])
+
+  const openBalances = useCallback(() => {
+    setError(null)
+    setView('balances')
+  }, [])
 
   const authenticatedFetch = useCallback(
     <T,>(path: string, init?: RequestInit) =>
@@ -432,6 +471,157 @@ function App() {
       }
     },
     [appSettings, user, password],
+  )
+
+  const saveBalanceMap = useCallback(
+    async (
+      investmentId: string,
+      organizzeAccountId: number | '',
+      nickname?: string | null,
+      enabled: boolean = true,
+    ) => {
+      if (!appSettings) {
+        return
+      }
+      setError(null)
+      setSaving(true)
+      try {
+        const sourceKey = `investment:${investmentId}`
+        const existing = appSettings.balanceMaps.find(
+          (map) => map.sourceKey === sourceKey,
+        )
+        const nextNickname =
+          nickname !== undefined
+            ? nickname?.trim()
+              ? nickname.trim().slice(0, 40)
+              : null
+            : (existing?.nickname ?? null)
+        const nextMaps = appSettings.balanceMaps.filter(
+          (map) => map.sourceKey !== sourceKey,
+        )
+        if (organizzeAccountId !== '') {
+          nextMaps.push({
+            sourceKey,
+            sourceKind: 'investment',
+            pluggySourceId: investmentId,
+            organizzeAccountId: Number(organizzeAccountId),
+            nickname: nextNickname,
+            enabled,
+          })
+        } else if (!enabled) {
+          // Exclude from auto-sum even without an explicit target: keep disabled
+          // map on first inferred/default account if we had one before.
+          const fallbackId = existing?.organizzeAccountId
+          if (fallbackId) {
+            nextMaps.push({
+              sourceKey,
+              sourceKind: 'investment',
+              pluggySourceId: investmentId,
+              organizzeAccountId: fallbackId,
+              nickname: nextNickname,
+              enabled: false,
+            })
+          }
+        }
+        const updated = await apiFetch<AppSettings>(
+          '/api/settings',
+          user,
+          password,
+          {
+            method: 'PUT',
+            body: JSON.stringify({ balanceMaps: nextMaps }),
+          },
+        )
+        setAppSettings(updated)
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Erro ao salvar mapeamento de saldo',
+        )
+      } finally {
+        setSaving(false)
+      }
+    },
+    [appSettings, user, password],
+  )
+
+  const setInvestmentIncluded = useCallback(
+    async (
+      investment: PluggyInvestment,
+      included: boolean,
+      inferredOrganizzeAccountId: number | null,
+    ) => {
+      if (!appSettings) {
+        return
+      }
+      const sourceKey = `investment:${investment.id}`
+      const existing = appSettings.balanceMaps.find(
+        (map) => map.sourceKey === sourceKey,
+      )
+      const organizzeAccountId =
+        existing?.organizzeAccountId ?? inferredOrganizzeAccountId
+      if (!included) {
+        if (!organizzeAccountId) {
+          setError(
+            'Selecione a conta Organizze antes de desmarcar este investment.',
+          )
+          return
+        }
+        await saveBalanceMap(
+          investment.id,
+          organizzeAccountId,
+          undefined,
+          false,
+        )
+        return
+      }
+      if (existing?.enabled === false && organizzeAccountId) {
+        await saveBalanceMap(investment.id, organizzeAccountId, undefined, true)
+      }
+    },
+    [appSettings, saveBalanceMap],
+  )
+
+  const inferOrganizzeAccountForInvestment = useCallback(
+    (investment: PluggyInvestment): number | null => {
+      if (!appSettings) {
+        return null
+      }
+      const existing = appSettings.balanceMaps.find(
+        (map) => map.sourceKey === `investment:${investment.id}`,
+      )
+      if (existing?.organizzeAccountId) {
+        return existing.organizzeAccountId
+      }
+      const connection = pluggyConnections.find(
+        (entry) =>
+          entry.id === investment.connectionId ||
+          entry.itemId === investment.itemId,
+      )
+      if (!connection) {
+        return null
+      }
+      const ozIds = new Set<number>()
+      for (const account of connection.accounts) {
+        if ((account.type ?? '').toUpperCase() === 'CREDIT') {
+          continue
+        }
+        const map = appSettings.accountMaps.find(
+          (entry) =>
+            entry.pluggyAccountId === account.id &&
+            entry.targetType === 'account',
+        )
+        if (map) {
+          ozIds.add(map.organizzeTargetId)
+        }
+      }
+      if (ozIds.size === 1) {
+        return [...ozIds][0]
+      }
+      return null
+    },
+    [appSettings, pluggyConnections],
   )
 
   const saveAccountNickname = useCallback(
@@ -700,6 +890,14 @@ function App() {
           </button>
           <button
             type="button"
+            className={`btn ghost ${view === 'balances' ? 'active-nav' : ''}`}
+            onClick={openBalances}
+          >
+            <span className="nav-label-full">Saldos</span>
+            <span className="nav-label-short">Saldos</span>
+          </button>
+          <button
+            type="button"
             className={`btn ghost ${view === 'settings' ? 'active-nav' : ''}`}
             onClick={() => void openSettings()}
           >
@@ -720,6 +918,8 @@ function App() {
             apiFetch={authenticatedFetch}
             onError={setError}
           />
+        ) : view === 'balances' ? (
+          <BalancesView apiFetch={authenticatedFetch} onError={setError} />
         ) : (
           <section className="settings">
             <div className="hero-panel">
@@ -1210,6 +1410,138 @@ function App() {
                               })}
                             </ul>
                           ) : null}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            </article>
+
+            <article className="panel settings-panel">
+              <div className="panel-head">
+                <div>
+                  <h2>Fontes de saldo (investments)</h2>
+                  <p>
+                    Investments da mesma conexão Pluggy que uma conta corrente
+                    mapeada entram automaticamente na soma. Desmarque o
+                    checkbox para ignorar um investment específico.
+                  </p>
+                </div>
+              </div>
+              <div className="panel-body">
+                {loading || !appSettings ? (
+                  <div className="empty loading-empty">
+                    <span className="spinner lg" aria-hidden />
+                    <strong>Carregando investments…</strong>
+                  </div>
+                ) : pluggyInvestments.length === 0 ? (
+                  <div className="empty">
+                    <strong>Nenhum investment encontrado</strong>
+                    <p>
+                      Conexões Pluggy sem produto de investimentos, ou ainda
+                      sem sync recente.
+                    </p>
+                  </div>
+                ) : (
+                  <ul className="account-list">
+                    {pluggyInvestments.map((investment) => {
+                      const sourceKey = `investment:${investment.id}`
+                      const current = appSettings.balanceMaps.find(
+                        (map) => map.sourceKey === sourceKey,
+                      )
+                      const targetId = current?.organizzeAccountId ?? ''
+                      const included = current?.enabled !== false
+                      const inferred =
+                        inferOrganizzeAccountForInvestment(investment)
+                      return (
+                        <li
+                          key={investment.id}
+                          className="config-row map-row"
+                        >
+                          <div className="map-parent">
+                            <div className="account-meta">
+                              <label className="balance-source-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={included}
+                                  disabled={saving}
+                                  onChange={(event) =>
+                                    void setInvestmentIncluded(
+                                      investment,
+                                      event.target.checked,
+                                      inferred,
+                                    )
+                                  }
+                                />
+                                <strong>{investment.name}</strong>
+                              </label>
+                              <span>
+                                {investment.connectionName ?? 'Pluggy'} ·{' '}
+                                {investment.type}
+                                {investment.subtype
+                                  ? `/${investment.subtype}`
+                                  : ''}{' '}
+                                ·{' '}
+                                {(investment.balanceCents / 100).toLocaleString(
+                                  'pt-BR',
+                                  { style: 'currency', currency: 'BRL' },
+                                )}
+                                {!included ? ' · ignorado na soma' : ''}
+                              </span>
+                            </div>
+                            <div className="map-controls">
+                              <select
+                                value={targetId}
+                                disabled={saving || !included}
+                                onChange={(event) => {
+                                  const value = event.target.value
+                                  void saveBalanceMap(
+                                    investment.id,
+                                    value ? Number(value) : '',
+                                    undefined,
+                                    true,
+                                  )
+                                }}
+                              >
+                                <option value="">
+                                  Auto (conta da conexão)
+                                </option>
+                                {organizzeAccounts
+                                  .filter((item) => !item.archived)
+                                  .map((item) => (
+                                    <option key={item.id} value={item.id}>
+                                      {item.name}
+                                    </option>
+                                  ))}
+                              </select>
+                              {targetId ? (
+                                <input
+                                  className="map-nickname"
+                                  type="text"
+                                  maxLength={40}
+                                  disabled={saving || !included}
+                                  defaultValue={current?.nickname ?? ''}
+                                  key={`${investment.id}-nick-${current?.nickname ?? ''}`}
+                                  placeholder="Apelido"
+                                  aria-label={`Apelido para ${investment.name}`}
+                                  onBlur={(event) =>
+                                    void saveBalanceMap(
+                                      investment.id,
+                                      Number(targetId),
+                                      event.target.value,
+                                      true,
+                                    )
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.currentTarget.blur()
+                                    }
+                                  }}
+                                />
+                              ) : null}
+                            </div>
+                          </div>
                         </li>
                       )
                     })}

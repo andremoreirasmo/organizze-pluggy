@@ -121,6 +121,11 @@ export class PluggyController {
     return this.pluggy.listAccounts(itemId);
   }
 
+  @Get('investments')
+  listInvestments() {
+    return this.pluggy.listInvestments();
+  }
+
   @Get('transactions')
   listTransactions(
     @Query('accountId') accountId: string,

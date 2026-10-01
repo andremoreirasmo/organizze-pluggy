@@ -6,6 +6,7 @@ import {
   CreateOrganizzeTransferPayload,
   CreateOrganizzeTransactionPayload,
   OrganizzeAccount,
+  OrganizzeBalancesResponse,
   OrganizzeCategory,
   OrganizzeCreditCard,
   OrganizzeInvoice,
@@ -127,6 +128,30 @@ export class OrganizzeService {
       .toLowerCase()
       .trim();
     return /^(carteira|dinheiro|cash|wallet|especie)$/.test(normalized);
+  }
+
+  /**
+   * Current realized balance for a bank account (cents).
+   * Uses GET /balances with a range ending today.
+   */
+  async getAccountBalanceCents(accountId: number): Promise<number> {
+    const today = new Date();
+    const endDate = today.toISOString().slice(0, 10);
+    const startDate = `${today.getUTCFullYear()}-01-01`;
+    const response = await this.request<OrganizzeBalancesResponse>('/balances', {
+      query: {
+        account_id: accountId,
+        start_date: startDate,
+        end_date: endDate,
+        periodicity: 'monthly',
+      },
+    });
+    if (typeof response.balance !== 'number' || !Number.isFinite(response.balance)) {
+      throw new Error(
+        `Organizze /balances returned invalid balance for account ${accountId}`,
+      );
+    }
+    return Math.round(response.balance);
   }
 
   async listCategories(options?: {

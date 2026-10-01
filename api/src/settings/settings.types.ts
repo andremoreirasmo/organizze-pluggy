@@ -2,6 +2,8 @@ import { normalizeCardNumber } from '../pluggy/pluggy-accounts';
 
 export type AccountMapTargetType = 'account' | 'credit_card' | 'ignored';
 
+export type BalanceSourceKind = 'account' | 'investment' | 'reserved';
+
 export type AccountMap = {
   pluggyAccountId: string;
   targetType: AccountMapTargetType;
@@ -25,16 +27,81 @@ export function isActiveAccountMap(map: AccountMap): map is ActiveAccountMap {
   return map.targetType === 'account' || map.targetType === 'credit_card';
 }
 
+export type BalanceMap = {
+  /** Stable key: `account:{id}`, `investment:{id}`, or `reserved:{accountId}::{identification}`. */
+  sourceKey: string;
+  sourceKind: BalanceSourceKind;
+  pluggySourceId: string;
+  organizzeAccountId: number;
+  nickname?: string | null;
+  /** When false, source is excluded from balance snapshot. Default true. */
+  enabled?: boolean;
+};
+
+export function buildBalanceSourceKey(
+  kind: BalanceSourceKind,
+  pluggySourceId: string,
+): string {
+  return `${kind}:${pluggySourceId}`;
+}
+
+export function parseBalanceSourceKey(sourceKey: string): {
+  sourceKind: BalanceSourceKind;
+  pluggySourceId: string;
+} | null {
+  const separator = sourceKey.indexOf(':');
+  if (separator <= 0) {
+    return null;
+  }
+  const sourceKind = sourceKey.slice(0, separator);
+  const pluggySourceId = sourceKey.slice(separator + 1).trim();
+  if (
+    (sourceKind !== 'account' &&
+      sourceKind !== 'investment' &&
+      sourceKind !== 'reserved') ||
+    !pluggySourceId
+  ) {
+    return null;
+  }
+  return { sourceKind, pluggySourceId };
+}
+
+/** Reserved source id: `{accountId}::{identification}` */
+export function buildReservedSourceId(
+  accountId: string,
+  identification: string,
+): string {
+  return `${accountId}::${identification}`;
+}
+
+export function parseReservedSourceId(pluggySourceId: string): {
+  accountId: string;
+  identification: string;
+} | null {
+  const separator = pluggySourceId.indexOf('::');
+  if (separator <= 0) {
+    return null;
+  }
+  const accountId = pluggySourceId.slice(0, separator);
+  const identification = pluggySourceId.slice(separator + 2).trim();
+  if (!accountId || !identification) {
+    return null;
+  }
+  return { accountId, identification };
+}
+
 export type AppSettings = {
   amountTolerancePercent: number;
   dateToleranceDays: number;
   accountMaps: AccountMap[];
+  balanceMaps: BalanceMap[];
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   amountTolerancePercent: 5,
   dateToleranceDays: 5,
   accountMaps: [],
+  balanceMaps: [],
 };
 
 function normalizeNickname(value: unknown): string | null {
@@ -228,9 +295,64 @@ function consolidateAccountMaps(rawItems: unknown[]): AccountMap[] {
   return accountMaps;
 }
 
+function consolidateBalanceMaps(rawItems: unknown[]): BalanceMap[] {
+  const byKey = new Map<string, BalanceMap>();
+
+  for (const item of rawItems) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const map = item as Partial<BalanceMap>;
+    let sourceKind: BalanceSourceKind | null = null;
+    let pluggySourceId = '';
+    let sourceKey = '';
+
+    if (typeof map.sourceKey === 'string' && map.sourceKey.trim()) {
+      const parsed = parseBalanceSourceKey(map.sourceKey.trim());
+      if (!parsed) {
+        continue;
+      }
+      sourceKind = parsed.sourceKind;
+      pluggySourceId = parsed.pluggySourceId;
+      sourceKey = buildBalanceSourceKey(sourceKind, pluggySourceId);
+    } else if (
+      (map.sourceKind === 'account' ||
+        map.sourceKind === 'investment' ||
+        map.sourceKind === 'reserved') &&
+      typeof map.pluggySourceId === 'string' &&
+      map.pluggySourceId.trim()
+    ) {
+      sourceKind = map.sourceKind;
+      pluggySourceId = map.pluggySourceId.trim();
+      sourceKey = buildBalanceSourceKey(sourceKind, pluggySourceId);
+    } else {
+      continue;
+    }
+
+    if (
+      typeof map.organizzeAccountId !== 'number' ||
+      !Number.isFinite(map.organizzeAccountId) ||
+      map.organizzeAccountId <= 0
+    ) {
+      continue;
+    }
+
+    byKey.set(sourceKey, {
+      sourceKey,
+      sourceKind,
+      pluggySourceId,
+      organizzeAccountId: map.organizzeAccountId,
+      nickname: normalizeNickname(map.nickname),
+      enabled: map.enabled === false ? false : true,
+    });
+  }
+
+  return [...byKey.values()];
+}
+
 export function normalizeAppSettings(raw: unknown): AppSettings {
   if (!raw || typeof raw !== 'object') {
-    return { ...DEFAULT_APP_SETTINGS, accountMaps: [] };
+    return { ...DEFAULT_APP_SETTINGS, accountMaps: [], balanceMaps: [] };
   }
 
   const data = raw as Partial<AppSettings>;
@@ -247,10 +369,14 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
   const accountMaps = Array.isArray(data.accountMaps)
     ? consolidateAccountMaps(data.accountMaps)
     : [];
+  const balanceMaps = Array.isArray(data.balanceMaps)
+    ? consolidateBalanceMaps(data.balanceMaps)
+    : [];
 
   return {
     amountTolerancePercent,
     dateToleranceDays,
     accountMaps,
+    balanceMaps,
   };
 }

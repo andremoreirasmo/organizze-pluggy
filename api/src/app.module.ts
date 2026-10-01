@@ -10,6 +10,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { InstitutionModule } from './institution/institution.module';
 import { SettingsModule } from './settings/settings.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
+import { BalancesModule } from './balances/balances.module';
 import { validateEnv } from './config/env.validation';
 
 @Module({
@@ -27,6 +28,7 @@ import { validateEnv } from './config/env.validation';
     PluggyModule,
     SettingsModule,
     ReconciliationModule,
+    BalancesModule,
   ],
   providers: [
     {

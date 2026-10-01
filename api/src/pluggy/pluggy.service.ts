@@ -5,7 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PluggyClient, Transaction, Account } from 'pluggy-sdk';
+import {
+  PluggyClient,
+  Transaction,
+  Account,
+  Investment,
+} from 'pluggy-sdk';
 import { PrismaService } from '../prisma/prisma.module';
 import { InstitutionBrandService } from '../institution/institution-brand.service';
 import {
@@ -14,6 +19,22 @@ import {
   parsePluggyAccountMapKey,
   type PluggyAccountView,
 } from './pluggy-accounts';
+
+export type PluggyInvestmentView = {
+  id: string;
+  itemId: string;
+  name: string;
+  type: string;
+  subtype: string | null;
+  balance: number;
+  balanceCents: number;
+  amountProfit: number | null;
+  amountOriginal: number | null;
+  status: string | null;
+  currencyCode: string | null;
+  connectionId: string | null;
+  connectionName: string | null;
+};
 
 export type StoredConnection = {
   id: string;
@@ -359,6 +380,96 @@ export class PluggyService {
   async listAccountViews(): Promise<PluggyAccountView[]> {
     const accounts = await this.listAccounts();
     return expandPluggyAccountsForMapping(accounts);
+  }
+
+  private async fetchAllInvestmentsForItem(
+    itemId: string,
+  ): Promise<Investment[]> {
+    const results: Investment[] = [];
+    let page = 1;
+    let totalPages = 1;
+    while (page <= totalPages) {
+      const response = await this.client.fetchInvestments(itemId, undefined, {
+        page,
+        pageSize: 100,
+      });
+      results.push(...response.results);
+      totalPages = Math.max(1, response.totalPages ?? 1);
+      page += 1;
+      if (page > 50) {
+        break;
+      }
+    }
+    return results;
+  }
+
+  async listInvestments(): Promise<PluggyInvestmentView[]> {
+    this.requireDatabase();
+    const stored = await this.listConfiguredConnections();
+    if (stored.length === 0) {
+      return [];
+    }
+
+    const pages = await Promise.all(
+      stored.map(async (connection) => {
+        try {
+          const investments = await this.fetchAllInvestmentsForItem(
+            connection.itemId,
+          );
+          this.logger.log(
+            `Pluggy investments for ${connection.displayName} (${connection.itemId}): ${investments.length}`,
+          );
+          return investments.map((investment) => ({
+            investment,
+            connection,
+          }));
+        } catch (error) {
+          this.logger.warn(
+            `Could not list investments for item ${connection.itemId} (${connection.displayName}): ${String(error)}`,
+          );
+          return [] as Array<{
+            investment: Investment;
+            connection: StoredConnection;
+          }>;
+        }
+      }),
+    );
+
+    const byId = new Map<string, PluggyInvestmentView>();
+    for (const batch of pages) {
+      for (const { investment, connection } of batch) {
+        const status = investment.status ?? null;
+        if (status === 'TOTAL_WITHDRAWAL') {
+          continue;
+        }
+        const balance =
+          typeof investment.balance === 'number' ? investment.balance : 0;
+        byId.set(investment.id, {
+          id: investment.id,
+          itemId: investment.itemId,
+          name: investment.name,
+          type: investment.type,
+          subtype: investment.subtype ?? null,
+          balance,
+          balanceCents: Math.round(balance * 100),
+          amountProfit:
+            typeof investment.amountProfit === 'number'
+              ? investment.amountProfit
+              : null,
+          amountOriginal:
+            typeof investment.amountOriginal === 'number'
+              ? investment.amountOriginal
+              : null,
+          status,
+          currencyCode: investment.currencyCode ?? null,
+          connectionId: connection.id,
+          connectionName: connection.displayName,
+        });
+      }
+    }
+    return [...byId.values()].sort((a, b) =>
+      a.name.localeCompare(b.name, 'pt-BR'),
+    );
   }
 
   async listTransactions(params: {
