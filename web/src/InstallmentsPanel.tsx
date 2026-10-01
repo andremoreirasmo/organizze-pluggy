@@ -128,6 +128,14 @@ function currentMonthKeySaoPaulo(): string {
     .slice(0, 7)
 }
 
+function shiftMonthKey(monthKey: string, delta: number): string {
+  const [y, m] = monthKey.split('-').map(Number)
+  const absolute = y * 12 + (m - 1) + delta
+  const ny = Math.floor(absolute / 12)
+  const nm = (absolute % 12) + 1
+  return `${ny}-${String(nm).padStart(2, '0')}`
+}
+
 function truncateLabel(value: string, max = 28): string {
   const trimmed = value.trim()
   if (trimmed.length <= max) {
@@ -146,7 +154,7 @@ function ProgressRing({
   size?: number
 }) {
   const percent = total > 0 ? Math.round((paid / total) * 100) : 0
-  const data = [{ name: 'progress', value: percent, fill: '#2f9e44' }]
+  const chartData = [{ name: 'progress', value: percent, fill: '#2f9e44' }]
   return (
     <div className="parc-ring-wrap" style={{ width: size, height: size }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -155,7 +163,7 @@ function ProgressRing({
           cy="50%"
           innerRadius="72%"
           outerRadius="100%"
-          data={data}
+          data={chartData}
           startAngle={90}
           endAngle={-270}
         >
@@ -200,31 +208,125 @@ export function InstallmentsPanel({
 }: Props) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [hiddenIds, setHiddenIds] = useState<string[]>([])
+  const [showIgnored, setShowIgnored] = useState(false)
 
-  const barData = useMemo(
-    () =>
-      data.monthlyBars.map((bar) => ({
-        ...bar,
-        value: bar.amountCents / 100,
-        focus: bar.monthKey === data.focusMonth,
-      })),
-    [data.monthlyBars, data.focusMonth],
+  const hiddenSet = useMemo(() => new Set(hiddenIds), [hiddenIds])
+
+  const visiblePurchases = useMemo(
+    () => data.purchases.filter((purchase) => !hiddenSet.has(purchase.id)),
+    [data.purchases, hiddenSet],
   )
 
-  const purchases = useMemo(() => {
+  const ignoredPurchases = useMemo(
+    () => data.purchases.filter((purchase) => hiddenSet.has(purchase.id)),
+    [data.purchases, hiddenSet],
+  )
+
+  const committedThisMonthCents = useMemo(() => {
+    let sum = 0
+    for (const purchase of visiblePurchases) {
+      for (const entry of purchase.schedule) {
+        if (entry.monthKey === data.focusMonth) {
+          sum += Math.abs(entry.amountCents)
+        }
+      }
+    }
+    return sum
+  }, [visiblePurchases, data.focusMonth])
+
+  const barData = useMemo(() => {
+    return data.monthlyBars.map((bar) => {
+      let amountCents = 0
+      for (const purchase of visiblePurchases) {
+        for (const entry of purchase.schedule) {
+          if (entry.monthKey === bar.monthKey) {
+            amountCents += Math.abs(entry.amountCents)
+          }
+        }
+      }
+      return {
+        ...bar,
+        amountCents,
+        value: amountCents / 100,
+        focus: bar.monthKey === data.focusMonth,
+      }
+    })
+  }, [data.monthlyBars, data.focusMonth, visiblePurchases])
+
+  const payoffsThisMonth = useMemo(() => {
+    return visiblePurchases
+      .filter((purchase) => purchase.endsMonthKey === data.focusMonth)
+      .map((purchase) => {
+        const endsMonthKey = purchase.endsMonthKey as string
+        const paymentMonthKey = shiftMonthKey(endsMonthKey, 1)
+        return {
+          purchaseId: purchase.id,
+          description: purchase.description,
+          reliefCentsPerMonth: purchase.installmentAmountCents,
+          endsMonthKey,
+          paymentMonthKey,
+          reliefMonthKey: shiftMonthKey(paymentMonthKey, 1),
+        }
+      })
+      .sort((a, b) => b.reliefCentsPerMonth - a.reliefCentsPerMonth)
+  }, [visiblePurchases, data.focusMonth])
+
+  const nextPayoff = useMemo(() => {
+    if (data.focusMonth !== currentMonthKeySaoPaulo()) {
+      return null
+    }
+    const upcoming = [...visiblePurchases]
+      .filter(
+        (purchase) =>
+          typeof purchase.endsMonthKey === 'string' &&
+          purchase.endsMonthKey >= data.focusMonth,
+      )
+      .map((purchase) => {
+        const endsMonthKey = purchase.endsMonthKey as string
+        const paymentMonthKey = shiftMonthKey(endsMonthKey, 1)
+        return {
+          purchaseId: purchase.id,
+          description: purchase.description,
+          reliefCentsPerMonth: purchase.installmentAmountCents,
+          endsMonthKey,
+          paymentMonthKey,
+          reliefMonthKey: shiftMonthKey(paymentMonthKey, 1),
+        }
+      })
+      .sort((a, b) => {
+        const byPay = a.paymentMonthKey.localeCompare(b.paymentMonthKey)
+        if (byPay !== 0) {
+          return byPay
+        }
+        return b.reliefCentsPerMonth - a.reliefCentsPerMonth
+      })
+    return upcoming[0] ?? null
+  }, [visiblePurchases, data.focusMonth])
+
+  const filteredVisible = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) {
-      return data.purchases
+      return visiblePurchases
     }
-    return data.purchases.filter((purchase) =>
+    return visiblePurchases.filter((purchase) =>
       purchase.description.toLowerCase().includes(q),
     )
-  }, [data.purchases, query])
+  }, [visiblePurchases, query])
 
-  const selected = purchases.find((purchase) => purchase.id === selectedId) ?? null
-  const payoffsThisMonth = data.payoffsThisMonth ?? []
-  const showNextPayoff =
-    Boolean(data.nextPayoff) && data.focusMonth === currentMonthKeySaoPaulo()
+  const selected =
+    data.purchases.find((purchase) => purchase.id === selectedId) ?? null
+
+  function hidePurchase(id: string) {
+    setHiddenIds((current) =>
+      current.includes(id) ? current : [...current, id],
+    )
+    setSelectedId(null)
+  }
+
+  function restorePurchase(id: string) {
+    setHiddenIds((current) => current.filter((item) => item !== id))
+  }
 
   return (
     <div className={`dash-section${loading ? ' is-loading' : ''}`}>
@@ -232,10 +334,13 @@ export function InstallmentsPanel({
         <p className="parc-kicker">
           Comprometido em {data.focusMonthLabel}
         </p>
-        <p className="parc-total">{formatBRL(data.committedThisMonthCents)}</p>
+        <p className="parc-total">{formatBRL(committedThisMonthCents)}</p>
         <p className="parc-sub">
-          {data.activePurchaseCount} compras parceladas ativas · soma das
+          {visiblePurchases.length} compras parceladas ativas · soma das
           parcelas que caem em {data.focusMonthLabel}
+          {ignoredPurchases.length > 0
+            ? ` · ${ignoredPurchases.length} ignorada${ignoredPurchases.length === 1 ? '' : 's'}`
+            : ''}
         </p>
 
         <div className="parc-chart">
@@ -255,11 +360,7 @@ export function InstallmentsPanel({
                 cursor={{ fill: 'rgba(76, 110, 245, 0.08)' }}
                 content={<MonthBarTooltip />}
               />
-              <Bar
-                dataKey="value"
-                radius={[8, 8, 4, 4]}
-                maxBarSize={36}
-              >
+              <Bar dataKey="value" radius={[8, 8, 4, 4]} maxBarSize={36}>
                 {barData.map((entry) => (
                   <Cell
                     key={entry.monthKey}
@@ -287,7 +388,7 @@ export function InstallmentsPanel({
           </ResponsiveContainer>
         </div>
 
-        {showNextPayoff && data.nextPayoff ? (
+        {nextPayoff ? (
           <div className="parc-payoff">
             <div className="parc-payoff-icon" aria-hidden>
               <span />
@@ -295,24 +396,24 @@ export function InstallmentsPanel({
             <div className="parc-payoff-body">
               <span className="parc-payoff-label">
                 Próxima quitação ·{' '}
-                {formatMonthLong(data.nextPayoff.paymentMonthKey)}
+                {formatMonthLong(nextPayoff.paymentMonthKey)}
               </span>
               <strong className="parc-payoff-relief">
-                −{formatBRL(data.nextPayoff.reliefCentsPerMonth)}
+                −{formatBRL(nextPayoff.reliefCentsPerMonth)}
                 <span> /mês</span>
               </strong>
               <p className="parc-payoff-desc">
                 <button
                   type="button"
                   className="parc-payoff-link"
-                  onClick={() => setSelectedId(data.nextPayoff!.purchaseId)}
+                  onClick={() => setSelectedId(nextPayoff.purchaseId)}
                 >
-                  {truncateLabel(data.nextPayoff.description)}
+                  {truncateLabel(nextPayoff.description)}
                 </button>
                 <span>
                   {' '}
                   · alívio a partir de{' '}
-                  {formatMonthLong(data.nextPayoff.reliefMonthKey)}
+                  {formatMonthLong(nextPayoff.reliefMonthKey)}
                 </span>
               </p>
             </div>
@@ -360,11 +461,11 @@ export function InstallmentsPanel({
         />
       </label>
 
-      {purchases.length === 0 ? (
+      {filteredVisible.length === 0 ? (
         <p className="dash-empty">Nenhuma compra parcelada ativa.</p>
       ) : (
         <ul className="parc-list">
-          {purchases.map((purchase) => (
+          {filteredVisible.map((purchase) => (
             <li key={purchase.id}>
               <button
                 type="button"
@@ -394,6 +495,56 @@ export function InstallmentsPanel({
           ))}
         </ul>
       )}
+
+      {ignoredPurchases.length > 0 ? (
+        <div className="parc-ignored-block">
+          <button
+            type="button"
+            className="parc-ignored-toggle"
+            onClick={() => setShowIgnored((value) => !value)}
+          >
+            {showIgnored ? 'Ocultar' : 'Mostrar'} ignoradas (
+            {ignoredPurchases.length})
+          </button>
+          {showIgnored ? (
+            <ul className="parc-list parc-list-ignored">
+              {ignoredPurchases.map((purchase) => (
+                <li key={purchase.id}>
+                  <div className="parc-row parc-row-ignored">
+                    <ProgressRing
+                      paid={purchase.paidCount}
+                      total={purchase.totalInstallments}
+                    />
+                    <button
+                      type="button"
+                      className="parc-row-main parc-row-main-btn"
+                      onClick={() => setSelectedId(purchase.id)}
+                    >
+                      <strong>{purchase.description}</strong>
+                      <span>
+                        {purchase.currentInstallment} de{' '}
+                        {purchase.totalInstallments}
+                      </span>
+                    </button>
+                    <div className="parc-row-money">
+                      <strong>
+                        {formatBRL(purchase.installmentAmountCents)}
+                      </strong>
+                      <button
+                        type="button"
+                        className="parc-restore-btn"
+                        onClick={() => restorePurchase(purchase.id)}
+                      >
+                        Restaurar
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
 
       {selected ? (
         <div
@@ -427,6 +578,26 @@ export function InstallmentsPanel({
                 Fechar
               </button>
             </header>
+
+            <div className="parc-sheet-actions">
+              {hiddenSet.has(selected.id) ? (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => restorePurchase(selected.id)}
+                >
+                  Restaurar no relatório
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => hidePurchase(selected.id)}
+                >
+                  Ignorar nesta visualização
+                </button>
+              )}
+            </div>
 
             <div className="parc-sheet-progress">
               <ProgressRing
