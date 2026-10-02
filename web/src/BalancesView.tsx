@@ -548,7 +548,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
                   <div className="balance-card-head">
                     <div>
                       <span
-                        className={`badge ${row.status === 'ok' ? 'kind-bank' : 'kind-invoice'}`}
+                        className={`badge balance-status ${row.status === 'ok' ? 'is-ok' : 'is-diverged'}`}
                       >
                         {row.status === 'ok' ? 'OK' : 'Divergente'}
                       </span>
@@ -674,11 +674,13 @@ export function BalancesView({ apiFetch, onError }: Props) {
               </header>
               <ul className={`balance-list ${saving ? 'is-busy' : ''}`}>
                 {snapshot.invoiceRows.map((row) => {
-                  const invoiceTitle = row.invoiceStartingDate
-                    ? formatInvoiceMonthTitle(row.invoiceStartingDate)
-                    : row.invoiceDueDate
-                      ? formatInvoiceMonthTitle(row.invoiceDueDate)
-                      : null
+                  const invoiceTitle = row.invoiceDueDate
+                    ? formatInvoiceMonthTitle(row.invoiceDueDate)
+                    : row.invoiceStartingDate
+                      ? formatInvoiceMonthTitle(row.invoiceStartingDate)
+                      : row.pluggyBillDueDate
+                        ? formatInvoiceMonthTitle(row.pluggyBillDueDate)
+                        : null
                   const statusLabel =
                     row.status === 'ok'
                       ? 'OK'
@@ -689,10 +691,10 @@ export function BalancesView({ apiFetch, onError }: Props) {
                           : 'Divergente'
                   const statusClass =
                     row.status === 'ok'
-                      ? 'kind-bank'
+                      ? 'is-ok'
                       : row.status === 'diverged'
-                        ? 'kind-invoice'
-                        : 'kind-transfer'
+                        ? 'is-diverged'
+                        : 'is-muted'
                   return (
                     <li
                       key={`${row.organizzeCreditCardId}-${row.pluggyAccountId}`}
@@ -706,7 +708,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
                     >
                       <div className="balance-card-head">
                         <div>
-                          <span className={`badge ${statusClass}`}>
+                          <span className={`badge balance-status ${statusClass}`}>
                             {statusLabel}
                           </span>
                           <strong>{row.organizzeCreditCardName}</strong>
