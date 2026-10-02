@@ -213,19 +213,26 @@ Demais `/api/*` exigem sessão.
 
 ---
 
-## Deploy (Cloud Run — opcional)
+## Deploy (Cloud Run)
 
 Há um `Dockerfile` multi-stage (Node 22): build do `web` + `api`, Nest serve a SPA.
 
-Checklist típico:
+Script: [`scripts/deploy-cloudrun.ps1`](scripts/deploy-cloudrun.ps1) (lê o `.env` local, não imprime secrets).
 
-1. Secrets no Secret Manager / env do serviço (mesmas variáveis do `.env`).
-2. `NODE_ENV=production` (Cloud Run injeta `PORT`).
-3. Rodar `prisma migrate deploy` no banco **antes** do tráfego.
-4. No Google OAuth, adicionar a URL pública em **Authorized JavaScript origins**.
+```powershell
+.\scripts\deploy-cloudrun.ps1
+```
+
+Serviço atual: `organizze-pluggy` em `southamerica-east1` (projeto `brazuca-rd`).
+
+Checklist:
+
+1. Secrets no `.env` (ou Secret Manager) — mesmas variáveis do [`.env.example`](.env.example).
+2. `NODE_ENV=production` (Cloud Run injeta `PORT=8080`).
+3. `prisma migrate deploy` roda no script antes do deploy.
+4. No Google OAuth, adicionar a URL pública em **Authorized JavaScript origins**:
+   - `https://organizze-pluggy-1059927927425.southamerica-east1.run.app`
 5. `GET /api/health` deve responder sem login.
-
-Detalhes do fluxo com `gcloud` estão em `PLAN-cloudrun.md` (se mantido no repo).
 
 ---
 

@@ -18,6 +18,9 @@ async function bootstrap() {
 
   app.use(
     helmet({
+      // GIS Sign-In popup needs opener access when FedCM is off.
+      crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+      crossOriginEmbedderPolicy: false,
       contentSecurityPolicy: isProd
         ? {
             useDefaults: true,
@@ -31,8 +34,16 @@ async function bootstrap() {
               frameSrc: ["'self'", 'https://accounts.google.com'],
               connectSrc: ["'self'", 'https://accounts.google.com'],
               imgSrc: ["'self'", 'data:', 'https:'],
-              styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-              fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+              styleSrc: [
+                "'self'",
+                "'unsafe-inline'",
+                'https://fonts.googleapis.com',
+              ],
+              fontSrc: [
+                "'self'",
+                'https://fonts.gstatic.com',
+                'data:',
+              ],
             },
           }
         : false,
