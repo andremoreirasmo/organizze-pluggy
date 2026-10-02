@@ -213,34 +213,25 @@ Demais `/api/*` exigem sessão.
 
 ---
 
-## Deploy (Cloud Run)
+## Deploy em produção (opcional)
 
 Há um `Dockerfile` multi-stage (Node 22): build do `web` + `api`, Nest serve a SPA.
 
-### Automático (Cloud Build — GCP)
-
-Push na `master` dispara um **Cloud Build trigger** no projeto GCP (config **inline**, sem workflow no GitHub). Logs e secrets ficam só na GCP (Secret Manager + Cloud Build history).
-
-O serviço Cloud Run lê as envs via Secret Manager (`DATABASE_URL`, `GOOGLE_*`, `SESSION_SECRET`, Organizze, Pluggy — mesmos nomes do [`.env.example`](.env.example)).
-
-Depois do deploy, a URL do serviço deve estar em **Google OAuth → Authorized JavaScript origins**.
-
-### Manual (local)
-
-Script: [`scripts/deploy-cloudrun.ps1`](scripts/deploy-cloudrun.ps1) (lê o `.env` local, não imprime secrets).
+Para subir no **seu** GCP (Cloud Run), use o script local [`scripts/deploy-cloudrun.ps1`](scripts/deploy-cloudrun.ps1) — lê o `.env` da raiz e não imprime secrets:
 
 ```powershell
-$env:GCP_PROJECT_ID = "seu-projeto"
+$env:GCP_PROJECT_ID = "seu-projeto-gcp"
 .\scripts\deploy-cloudrun.ps1
 ```
 
-Checklist:
+O script roda `prisma migrate deploy` e `gcloud run deploy --source`. Variáveis de ambiente em produção: mesmas do [`.env.example`](.env.example), com `NODE_ENV=production` (Cloud Run usa `PORT=8080`).
 
-1. Secrets no `.env` — mesmas variáveis do [`.env.example`](.env.example).
-2. `NODE_ENV=production` (Cloud Run injeta `PORT=8080`).
-3. `prisma migrate deploy` roda no script antes do deploy.
-4. No Google OAuth, adicionar a URL pública do serviço em **Authorized JavaScript origins** (a URL aparece no fim do deploy).
-5. `GET /api/health` deve responder sem login.
+Depois do deploy:
+
+1. Adicionar a URL pública em **Google OAuth → Authorized JavaScript origins**.
+2. Conferir `GET /api/health` (sem login).
+
+CI/CD e secrets de produção ficam fora deste repositório (infra pessoal).
 
 ---
 
