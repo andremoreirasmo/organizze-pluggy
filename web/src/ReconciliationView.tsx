@@ -266,6 +266,9 @@ function isForeignCurrency(currencyCode: string | null | undefined): boolean {
 function PluggyAmountDisplay({
   pluggy,
   className,
+  editableValue,
+  onEditableChange,
+  disabled = false,
 }: {
   pluggy: Pick<
     QueuePluggyTransaction,
@@ -275,28 +278,82 @@ function PluggyAmountDisplay({
     | 'amountInAccountCurrencyCents'
   >
   className?: string
+  /** When set with onEditableChange, the BRL amount becomes an inline editor. */
+  editableValue?: string
+  onEditableChange?: (value: string) => void
+  disabled?: boolean
 }) {
   const foreign = isForeignCurrency(pluggy.currencyCode)
   const currency = (pluggy.currencyCode ?? 'BRL').toUpperCase()
-  const signClass = pluggy.organizzeAmountCents < 0 ? 'neg' : 'pos'
+  const editable =
+    editableValue !== undefined && typeof onEditableChange === 'function'
+  const parsedEditable = editable
+    ? parseSignedBRLInputToCents(editableValue)
+    : null
+  const effectiveCents = parsedEditable ?? pluggy.organizzeAmountCents
+  const signClass = effectiveCents < 0 ? 'neg' : effectiveCents > 0 ? 'pos' : ''
+  const inputSize = Math.min(
+    12,
+    Math.max(4, (editableValue ?? '').trim().length || 4),
+  )
 
   if (foreign) {
     const original = formatMoney(pluggy.amountCents, currency)
-    const converted =
-      pluggy.amountInAccountCurrencyCents !== null &&
-      pluggy.amountInAccountCurrencyCents !== undefined
-        ? formatBRL(pluggy.organizzeAmountCents)
-        : null
     return (
-      <div className={`recon-amount${className ? ` ${className}` : ''} ${signClass}`}>
+      <div
+        className={`recon-amount${className ? ` ${className}` : ''} ${signClass}`}
+      >
         <strong>{original}</strong>
-        {converted ? <span className="recon-amount-fx">≈ {converted}</span> : null}
+        {editable ? (
+          <label className="recon-amount-edit">
+            <span className="recon-amount-fx">≈ R$</span>
+            <input
+              className="recon-amount-input"
+              value={editableValue}
+              size={inputSize}
+              disabled={disabled}
+              inputMode="decimal"
+              aria-label="Valor no Organizze ao vincular"
+              title="Valor no Organizze ao vincular"
+              onChange={(event) => onEditableChange(event.target.value)}
+            />
+          </label>
+        ) : pluggy.amountInAccountCurrencyCents !== null &&
+          pluggy.amountInAccountCurrencyCents !== undefined ? (
+          <span className="recon-amount-fx">
+            ≈ {formatBRL(pluggy.organizzeAmountCents)}
+          </span>
+        ) : null}
       </div>
     )
   }
 
+  if (editable) {
+    return (
+      <label
+        className={`recon-amount is-editable${className ? ` ${className}` : ''} ${signClass}`}
+        title="Valor no Organizze ao vincular"
+      >
+        <span className="recon-amount-currency" aria-hidden>
+          R$
+        </span>
+        <input
+          className="recon-amount-input"
+          value={editableValue}
+          size={inputSize}
+          disabled={disabled}
+          inputMode="decimal"
+          aria-label="Valor no Organizze ao vincular"
+          onChange={(event) => onEditableChange(event.target.value)}
+        />
+      </label>
+    )
+  }
+
   return (
-    <div className={`recon-amount${className ? ` ${className}` : ''} ${signClass}`}>
+    <div
+      className={`recon-amount${className ? ` ${className}` : ''} ${signClass}`}
+    >
       {formatBRL(pluggy.organizzeAmountCents)}
     </div>
   )
@@ -1029,9 +1086,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const openSearchModal = (item: ReconciliationQueueItem) => {
     setSearchItem(item)
     setSearchQuery('')
-    setSearchLinkAmount(
-      formatSignedAmountInput(item.pluggy.organizzeAmountCents),
-    )
+    setSearchLinkAmount(linkAmountForItem(item))
     setSearchAccountKey(accountFilterKey(item.pluggy))
     setSearchKind(
       item.pluggy.mappedTargetType === 'credit_card' ? 'credit_card' : 'account',
@@ -1760,7 +1815,14 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                         : ''}
                     </span>
                   </div>
-                  <PluggyAmountDisplay pluggy={item.pluggy} />
+                  <PluggyAmountDisplay
+                    pluggy={item.pluggy}
+                    editableValue={linkAmountForItem(item)}
+                    disabled={anyBusy}
+                    onEditableChange={(value) =>
+                      setLinkAmountForItem(item.pluggy.id, value)
+                    }
+                  />
                 </div>
 
                 {isSamePersonTransfer(item.pluggy) ? (
@@ -1778,27 +1840,30 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
                 {item.suggestions.length > 0 ? (
                   <div className="suggestions">
-                    <div className="suggestions-head">
+                    <div className="suggestions-head is-row">
                       <strong>Sugestões no Organizze</strong>
-                      <span>
-                        Vincular marca o lançamento como pago e grava o ID
-                        Pluggy nas observações.
+                      <span className="match-hint suggestions-info">
+                        <button
+                          type="button"
+                          className="suggestions-info-btn"
+                          aria-label="Como funciona vincular"
+                          tabIndex={0}
+                        >
+                          ?
+                        </button>
+                        <span className="match-hint-tooltip" role="tooltip">
+                          <strong>Ao vincular</strong>
+                          <span>
+                            Marca o lançamento como pago no Organizze e grava o
+                            ID Pluggy nas observações.
+                          </span>
+                          <span className="match-hint-note">
+                            Edite o valor no topo do card se quiser gravar um
+                            valor diferente da sugestão.
+                          </span>
+                        </span>
                       </span>
                     </div>
-                    <label className="link-amount-field">
-                      Valor no Organizze ao vincular
-                      <input
-                        value={linkAmountForItem(item)}
-                        disabled={anyBusy}
-                        inputMode="decimal"
-                        onChange={(event) =>
-                          setLinkAmountForItem(
-                            item.pluggy.id,
-                            event.target.value,
-                          )
-                        }
-                      />
-                    </label>
                     <ul>
                       {item.suggestions.map((candidate) => {
                         const linkingThis =
@@ -1824,17 +1889,90 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                             : candidate.amountCents > 0
                               ? 'pos'
                               : ''
+                        const ofAmountCents = item.pluggy.organizzeAmountCents
+                        const hasAmountDiff = candidate.amountDiffCents > 0
+                        const hasDateDiff = candidate.daysDiff > 0
                         return (
                           <li key={candidate.organizzeTransactionId}>
                             <div className="suggestion-body">
                               <span>{candidate.description}</span>
                               <small>{metaParts.join(' · ')}</small>
                             </div>
-                            <div className="suggestion-side">
-                              <div
-                                className={`recon-amount suggestion-amount ${amountClass}`}
-                              >
-                                {formatBRL(candidate.amountCents)}
+                            <div className="suggestion-side is-inline">
+                              <div className="suggestion-amount-block">
+                                <div
+                                  className={`suggestion-amount ${amountClass}`}
+                                >
+                                  {formatBRL(candidate.amountCents)}
+                                </div>
+                                {hasAmountDiff || hasDateDiff ? (
+                                  <span className="match-hint">
+                                    <span
+                                      className="match-hint-badge"
+                                      tabIndex={0}
+                                    >
+                                      {hasAmountDiff
+                                        ? `≠ ${formatBRL(candidate.amountDiffCents)}`
+                                        : null}
+                                      {hasAmountDiff && hasDateDiff
+                                        ? ' · '
+                                        : null}
+                                      {hasDateDiff
+                                        ? `${candidate.daysDiff}d`
+                                        : null}
+                                    </span>
+                                    <span
+                                      className="match-hint-tooltip"
+                                      role="tooltip"
+                                    >
+                                      <strong>
+                                        Comparado ao Open Finance
+                                      </strong>
+                                      {hasAmountDiff ? (
+                                        <>
+                                          <span>
+                                            Open Finance:{' '}
+                                            <em>
+                                              {formatBRL(ofAmountCents)}
+                                            </em>
+                                          </span>
+                                          <span>
+                                            Nesta sugestão:{' '}
+                                            <em>
+                                              {formatBRL(
+                                                candidate.amountCents,
+                                              )}
+                                            </em>
+                                          </span>
+                                          <span>
+                                            Diferença:{' '}
+                                            <em>
+                                              {formatBRL(
+                                                candidate.amountDiffCents,
+                                              )}
+                                            </em>
+                                          </span>
+                                        </>
+                                      ) : null}
+                                      {hasDateDiff ? (
+                                        <span>
+                                          Datas:{' '}
+                                          <em>
+                                            {candidate.daysDiff}{' '}
+                                            {candidate.daysDiff === 1
+                                              ? 'dia'
+                                              : 'dias'}{' '}
+                                            de diferença
+                                          </em>
+                                        </span>
+                                      ) : null}
+                                      <span className="match-hint-note">
+                                        Ao vincular, usa o valor editável no
+                                        topo do card.
+                                      </span>
+                                    </span>
+                                  </span>
+                                ) : null}
                               </div>
                               <button
                                 type="button"
@@ -2373,67 +2511,69 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                             <span>{metaParts.join(' · ')}</span>
                           </small>
                         </div>
-                        <div className="suggestion-side">
-                          <div
-                            className={`recon-amount suggestion-amount ${amountClass}`}
-                          >
-                            {formatBRL(candidate.amountCents)}
-                          </div>
-                          {hasAmountDiff || hasDateDiff ? (
-                            <span className="match-hint">
-                              <span className="match-hint-badge" tabIndex={0}>
-                                {hasAmountDiff
-                                  ? `≠ ${formatBRL(candidate.amountDiffCents)}`
-                                  : null}
-                                {hasAmountDiff && hasDateDiff ? ' · ' : null}
-                                {hasDateDiff
-                                  ? `${candidate.daysDiff}d`
-                                  : null}
-                              </span>
-                              <span
-                                className="match-hint-tooltip"
-                                role="tooltip"
-                              >
-                                <strong>Comparado ao Open Finance</strong>
-                                {hasAmountDiff ? (
-                                  <>
+                        <div className="suggestion-side is-inline">
+                          <div className="suggestion-amount-block">
+                            <div
+                              className={`suggestion-amount ${amountClass}`}
+                            >
+                              {formatBRL(candidate.amountCents)}
+                            </div>
+                            {hasAmountDiff || hasDateDiff ? (
+                              <span className="match-hint">
+                                <span className="match-hint-badge" tabIndex={0}>
+                                  {hasAmountDiff
+                                    ? `≠ ${formatBRL(candidate.amountDiffCents)}`
+                                    : null}
+                                  {hasAmountDiff && hasDateDiff ? ' · ' : null}
+                                  {hasDateDiff
+                                    ? `${candidate.daysDiff}d`
+                                    : null}
+                                </span>
+                                <span
+                                  className="match-hint-tooltip"
+                                  role="tooltip"
+                                >
+                                  <strong>Comparado ao Open Finance</strong>
+                                  {hasAmountDiff ? (
+                                    <>
+                                      <span>
+                                        Open Finance:{' '}
+                                        <em>{formatBRL(ofAmountCents)}</em>
+                                      </span>
+                                      <span>
+                                        Neste lançamento:{' '}
+                                        <em>
+                                          {formatBRL(candidate.amountCents)}
+                                        </em>
+                                      </span>
+                                      <span>
+                                        Diferença:{' '}
+                                        <em>
+                                          {formatBRL(candidate.amountDiffCents)}
+                                        </em>
+                                      </span>
+                                    </>
+                                  ) : null}
+                                  {hasDateDiff ? (
                                     <span>
-                                      Open Finance:{' '}
-                                      <em>{formatBRL(ofAmountCents)}</em>
-                                    </span>
-                                    <span>
-                                      Neste lançamento:{' '}
+                                      Datas:{' '}
                                       <em>
-                                        {formatBRL(candidate.amountCents)}
+                                        {candidate.daysDiff}{' '}
+                                        {candidate.daysDiff === 1
+                                          ? 'dia'
+                                          : 'dias'}{' '}
+                                        de diferença
                                       </em>
                                     </span>
-                                    <span>
-                                      Diferença:{' '}
-                                      <em>
-                                        {formatBRL(candidate.amountDiffCents)}
-                                      </em>
-                                    </span>
-                                  </>
-                                ) : null}
-                                {hasDateDiff ? (
-                                  <span>
-                                    Datas:{' '}
-                                    <em>
-                                      {candidate.daysDiff}{' '}
-                                      {candidate.daysDiff === 1
-                                        ? 'dia'
-                                        : 'dias'}{' '}
-                                      de diferença
-                                    </em>
+                                  ) : null}
+                                  <span className="match-hint-note">
+                                    Ao vincular, o valor usado é o do campo
+                                    acima.
                                   </span>
-                                ) : null}
-                                <span className="match-hint-note">
-                                  Ao vincular, o valor usado é o do campo
-                                  acima.
                                 </span>
                               </span>
-                            </span>
-                          ) : null}
+                            ) : null}
+                          </div>
                           <button
                             type="button"
                             className="btn"

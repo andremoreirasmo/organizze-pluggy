@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
+import { AppChrome } from './AppChrome'
 import { BalancesView } from './BalancesView'
 import { BottomSheet } from './BottomSheet'
 import { DashboardView } from './DashboardView'
@@ -1334,73 +1335,18 @@ function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark" aria-hidden>
-            o
-          </div>
-          <div className="brand-text">
-            <strong>organizze</strong>
-            <span>↔ pluggy · conciliação</span>
-          </div>
-        </div>
-        <nav className="topbar-nav" aria-label="Navegação principal">
-          <button
-            type="button"
-            className={`btn ghost ${view === 'reconcile' ? 'active-nav' : ''}`}
-            onClick={openReconcile}
-          >
-            <span className="nav-label-full">Conciliação</span>
-            <span className="nav-label-short">Fila</span>
-          </button>
-          <button
-            type="button"
-            className={`btn ghost ${view === 'balances' ? 'active-nav' : ''}`}
-            onClick={openBalances}
-          >
-            <span className="nav-label-full">Saldos</span>
-            <span className="nav-label-short">Saldos</span>
-          </button>
-          <button
-            type="button"
-            className={`btn ghost ${view === 'dashboard' ? 'active-nav' : ''}`}
-            onClick={openDashboard}
-          >
-            <span className="nav-label-full">Relatórios</span>
-            <span className="nav-label-short">Relat.</span>
-          </button>
-          <button
-            type="button"
-            className={`btn ghost ${view === 'settings' ? 'active-nav' : ''}`}
-            onClick={() => void openSettings()}
-          >
-            <span className="nav-label-full">Configurações</span>
-            <span className="nav-label-short">Config</span>
-          </button>
-        </nav>
-        <button
-          type="button"
-          className="btn ghost theme-toggle"
-          onClick={cyclePreference}
-          title={`Tema: ${themeLabel}`}
-          aria-label={`Alternar tema (atual: ${themeLabel})`}
-        >
-          <span className="theme-toggle-icon" aria-hidden>
-            {themeIcon}
-          </span>
-          <span className="theme-toggle-label">{themeLabel}</span>
-        </button>
-        <button
-          type="button"
-          className="btn ghost topbar-logout"
-          onClick={() => void logout()}
-        >
-          <span className="nav-logout-full">
-            Sair{sessionEmail ? ` · ${sessionEmail.split('@')[0]}` : ''}
-          </span>
-          <span className="nav-logout-short">Sair</span>
-        </button>
-      </header>
+      <AppChrome
+        view={view}
+        sessionEmail={sessionEmail}
+        themeLabel={themeLabel}
+        themeIcon={themeIcon}
+        onCycleTheme={cyclePreference}
+        onReconcile={openReconcile}
+        onBalances={openBalances}
+        onDashboard={openDashboard}
+        onSettings={() => void openSettings()}
+        onLogout={() => void logout()}
+      />
 
       <main className="content">
         {error ? <p className="error-banner">{error}</p> : null}
