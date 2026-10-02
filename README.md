@@ -217,34 +217,13 @@ Demais `/api/*` exigem sessão.
 
 Há um `Dockerfile` multi-stage (Node 22): build do `web` + `api`, Nest serve a SPA.
 
-### Automático (GitHub Actions)
+### Automático (Cloud Build — GCP)
 
-A cada **push na `master`**, o workflow [`.github/workflows/deploy-cloudrun.yml`](.github/workflows/deploy-cloudrun.yml) roda `prisma migrate deploy` e `gcloud run deploy --source`.
+Push na `master` dispara um **Cloud Build trigger** no projeto GCP (config **inline**, sem workflow no GitHub). Logs e secrets ficam só na GCP (Secret Manager + Cloud Build history).
 
-Configure no repositório (**Settings → Secrets and variables → Actions**):
+O serviço Cloud Run lê as envs via Secret Manager (`DATABASE_URL`, `GOOGLE_*`, `SESSION_SECRET`, Organizze, Pluggy — mesmos nomes do [`.env.example`](.env.example)).
 
-**Variable (obrigatória)**
-
-| Nome | Exemplo |
-|------|---------|
-| `GCP_PROJECT_ID` | seu projeto no GCP |
-
-**Variables (opcionais)**
-
-| Nome | Default no workflow |
-|------|---------------------|
-| `GCP_REGION` | `southamerica-east1` |
-| `GCP_SERVICE_NAME` | `organizze-pluggy` |
-
-**Secrets (obrigatórios)** — mesmos nomes do [`.env.example`](.env.example), mais:
-
-| Nome | Uso |
-|------|-----|
-| `GCP_SA_KEY` | JSON da service account com permissão de Cloud Run + Cloud Build |
-
-Secrets da aplicação: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_ALLOWED_EMAILS`, `SESSION_SECRET`, `ORGANIZZE_EMAIL`, `ORGANIZZE_API_TOKEN`, `ORGANIZZE_USER_AGENT`, `PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`.
-
-Depois do deploy, o log do workflow mostra a URL (`Deployed: https://…`). Use essa URL em **Google OAuth → Authorized JavaScript origins**.
+Depois do deploy, a URL do serviço deve estar em **Google OAuth → Authorized JavaScript origins**.
 
 ### Manual (local)
 
