@@ -91,7 +91,12 @@ export function AppChrome({
   return (
     <>
       <header className="topbar">
-        <div className="brand">
+        <button
+          type="button"
+          className="brand brand-home"
+          aria-label="Ir para a página inicial"
+          onClick={() => go(onReconcile)}
+        >
           <div className="brand-mark" aria-hidden>
             o
           </div>
@@ -99,7 +104,7 @@ export function AppChrome({
             <strong>organizze</strong>
             <span>↔ pluggy · conciliação</span>
           </div>
-        </div>
+        </button>
         <nav
           className="topbar-nav topbar-nav-desktop"
           aria-label="Navegação principal"

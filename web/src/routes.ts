@@ -29,6 +29,11 @@ const KINDS: ReconciliationKindFilter[] = [
 
 const MONTH_RE = /^\d{4}-\d{2}$/
 
+/** Sentinela relativa: “sempre o mês corrente”, não um YYYY-MM fixo. */
+export const CURRENT_MONTH_PARAM = 'atual'
+
+const CURRENT_MONTH_ALIASES = new Set(['atual', 'current'])
+
 export function viewFromPath(pathname: string): AppView {
   const normalized = pathname.replace(/\/+$/, '') || '/'
   if (normalized === ROUTES.balances) {
@@ -47,9 +52,39 @@ export function pathForView(view: AppView): string {
   return ROUTES[view]
 }
 
+/**
+ * Lê mês concreto da URL.
+ * `null` = ausente, inválido ou sentinela relativa (`atual` / `current`) → usar mês corrente.
+ */
 export function readMonthParam(params: URLSearchParams): string | null {
   const month = params.get('month')
-  return month && MONTH_RE.test(month) ? month : null
+  if (!month || CURRENT_MONTH_ALIASES.has(month.toLowerCase())) {
+    return null
+  }
+  return MONTH_RE.test(month) ? month : null
+}
+
+/** Resolve o YYYY-MM efetivo a partir dos search params. */
+export function resolveYearMonth(
+  params: URLSearchParams,
+  currentYm: string,
+): string {
+  return readMonthParam(params) ?? currentYm
+}
+
+/** Serializa mês para a URL: mês atual → `atual`; outro → `YYYY-MM`. */
+export function monthParamForUrl(
+  yearMonth: string,
+  currentYm: string,
+): string {
+  return yearMonth === currentYm ? CURRENT_MONTH_PARAM : yearMonth
+}
+
+export function searchParamsEqual(
+  a: URLSearchParams,
+  b: URLSearchParams,
+): boolean {
+  return a.toString() === b.toString()
 }
 
 export function readAccountParam(params: URLSearchParams): string | null {

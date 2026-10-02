@@ -33,3 +33,25 @@ export function appendPluggyMarker(
   const base = (notes ?? '').trim();
   return base.length > 0 ? `${base}\n${marker}` : marker;
 }
+
+export function removePluggyMarker(
+  notes: string | null | undefined,
+  pluggyTransactionId: string,
+): string {
+  if (!notes) {
+    return '';
+  }
+  const marker = buildPluggyMarker(pluggyTransactionId);
+  return notes
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .split(marker)
+        .join(' ')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim(),
+    )
+    .filter((line) => line.length > 0)
+    .join('\n')
+    .trim();
+}

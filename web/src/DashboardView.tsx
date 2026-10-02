@@ -13,6 +13,7 @@ import {
   patchSearchParams,
   readMonthParam,
   readSectionParam,
+  resolveYearMonth,
   ROUTES,
   type ReportSection,
 } from './routes'
@@ -115,16 +116,14 @@ export function DashboardView({ apiFetch, onError }: Props) {
     }
     const nextSection = readSectionParam(searchParams) ?? 'installments'
     setSection(nextSection)
-    const month = readMonthParam(searchParams)
-    if (month) {
-      setFocusMonth((current) => {
-        if (current === month) {
-          return current
-        }
-        failedMonthRef.current = null
-        return month
-      })
-    }
+    const month = resolveYearMonth(searchParams, currentMonthKeySaoPaulo())
+    setFocusMonth((current) => {
+      if (current === month) {
+        return current
+      }
+      failedMonthRef.current = null
+      return month
+    })
   }, [searchParams, isActive])
 
   const loadInstallments = useCallback(

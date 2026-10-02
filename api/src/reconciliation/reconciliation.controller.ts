@@ -45,6 +45,12 @@ class LinkDto extends DateRangeDto {
   @Type(() => Number)
   @IsInt()
   amountCents?: number;
+
+  /** Conta Organizze onde o pagamento/recebimento deve ficar ao vincular. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  accountId?: number;
 }
 
 class ImportDto extends DateRangeDto {
@@ -146,6 +152,20 @@ export class ReconciliationController {
   @Delete('ignored/:pluggyTxId')
   unignore(@Param('pluggyTxId') pluggyTxId: string) {
     return this.reconciliation.unignoreTransaction(pluggyTxId);
+  }
+
+  @Get('done')
+  listDone(@Query('from') from: string, @Query('to') to: string) {
+    return this.reconciliation.listDone(from, to);
+  }
+
+  @Delete('done/:pluggyTxId')
+  undoDone(
+    @Param('pluggyTxId') pluggyTxId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.reconciliation.undoDoneTransaction(pluggyTxId, { from, to });
   }
 
   @Post(':pluggyTxId/link')

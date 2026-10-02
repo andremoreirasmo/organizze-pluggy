@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
+import { ConfirmDialog } from './ConfirmDialog'
 import { CreditCardPicker } from './CreditCardPicker'
 import { FilterDropdown } from './FilterDropdown'
 import { OptionPicker } from './OptionPicker'
@@ -12,12 +13,14 @@ import {
 } from './InvoicePicker'
 import { PullToRefresh } from './PullToRefresh'
 import {
+  monthParamForUrl,
   patchSearchParams,
   readAccountParam,
   readKindParam,
-  readMonthParam,
   readQueryParam,
+  resolveYearMonth,
   ROUTES,
+  searchParamsEqual,
   type ReconciliationKindFilter,
 } from './routes'
 
@@ -111,12 +114,31 @@ export type IgnoredSnapshot = {
   kind: ReconciliationKind
   installmentNumber: number | null
   totalInstallments: number | null
+  organizzeTransactionId?: number | null
+  organizzeDescription?: string | null
+  organizzeAccountName?: string | null
+  organizzeTargetType?: 'account' | 'credit_card' | null
+  organizzeLinkedAmountCents?: number | null
+  organizzeRecurring?: boolean | null
+  wasPaidBeforeLink?: boolean | null
 }
 
 export type IgnoredItem = {
   id: string
   pluggyTransactionId: string
   providerId: string | null
+  notes: string | null
+  createdAt: string
+  snapshot: IgnoredSnapshot | null
+}
+
+export type DoneDecision = 'LINKED' | 'IMPORTED' | 'INVOICE_PAYMENT'
+
+export type DoneItem = {
+  id: string
+  pluggyTransactionId: string
+  providerId: string | null
+  decision: DoneDecision
   notes: string | null
   createdAt: string
   snapshot: IgnoredSnapshot | null
@@ -576,6 +598,20 @@ function kindLabel(kind: ReconciliationKind): string {
   return 'Conta'
 }
 
+function doneDecisionLabel(decision: DoneDecision): string {
+  if (decision === 'IMPORTED') return 'Importado'
+  if (decision === 'INVOICE_PAYMENT') return 'Fatura'
+  return 'Vinculado'
+}
+
+function organizzeTargetTypeLabel(
+  targetType: 'account' | 'credit_card' | null | undefined,
+): string | null {
+  if (targetType === 'credit_card') return 'Cartão'
+  if (targetType === 'account') return 'Conta'
+  return null
+}
+
 function installmentLabel(tx: QueuePluggyTransaction): string | null {
   const total = tx.totalInstallments ?? 0
   const current = tx.installmentNumber ?? 0
@@ -630,10 +666,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     location.pathname === ''
   const wasActiveRef = useRef(isActive)
 
-  const [yearMonth, setYearMonth] = useState(
-    () =>
-      readMonthParam(new URLSearchParams(window.location.search)) ??
+  const [yearMonth, setYearMonth] = useState(() =>
+    resolveYearMonth(
+      new URLSearchParams(window.location.search),
       currentYearMonth(),
+    ),
   )
   const [queue, setQueue] = useState<ReconciliationQueueResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -670,6 +707,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchLinkAmount, setSearchLinkAmount] = useState('')
   const [searchAccountKey, setSearchAccountKey] = useState('')
+  const [searchLinkAccountId, setSearchLinkAccountId] = useState('')
   const [searchKind, setSearchKind] = useState<'all' | 'account' | 'credit_card'>(
     'all',
   )
@@ -681,6 +719,12 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [ignoredOpen, setIgnoredOpen] = useState(false)
   const [ignoredItems, setIgnoredItems] = useState<IgnoredItem[]>([])
   const [ignoredLoading, setIgnoredLoading] = useState(false)
+  const [doneOpen, setDoneOpen] = useState(false)
+  const [doneItems, setDoneItems] = useState<DoneItem[]>([])
+  const [doneLoading, setDoneLoading] = useState(false)
+  const [undoConfirmItem, setUndoConfirmItem] = useState<DoneItem | null>(null)
+  const [ignoreConfirmItem, setIgnoreConfirmItem] =
+    useState<ReconciliationQueueItem | null>(null)
   const [restoringId, setRestoringId] = useState<string | null>(null)
   const [importDescription, setImportDescription] = useState('')
   const [importAmount, setImportAmount] = useState('')
@@ -747,6 +791,18 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       ),
     ]
   }, [organizzeAccounts, creditCards])
+
+  const searchLinkAccountOptions = useMemo(
+    () =>
+      organizzeAccounts
+        .filter((account) => !account.archived)
+        .map((account) => ({
+          value: String(account.id),
+          label: account.name,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')),
+    [organizzeAccounts],
+  )
 
   const filteredItems = useMemo(() => {
     if (!queue) {
@@ -831,7 +887,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         setStatusMessage('Carregando fila de conciliação…')
       }
       try {
-        const [queueData, cats, cards, accounts, ignored] = await Promise.all([
+        const [queueData, cats, cards, accounts, ignored, done] =
+          await Promise.all([
           apiFetch<ReconciliationQueueResponse>(
             `/api/reconciliation/queue?from=${range.from}&to=${range.to}`,
           ),
@@ -839,12 +896,16 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           apiFetch<OrganizzeCreditCard[]>('/api/organizze/credit-cards'),
           apiFetch<OrganizzeAccount[]>('/api/organizze/accounts'),
           apiFetch<{ items: IgnoredItem[] }>('/api/reconciliation/ignored'),
+          apiFetch<{ items: DoneItem[] }>(
+            `/api/reconciliation/done?from=${range.from}&to=${range.to}`,
+          ),
         ])
         setQueue(queueData)
         setCategories(cats)
         setCreditCards(cards)
         setOrganizzeAccounts(accounts)
         setIgnoredItems(ignored.items)
+        setDoneItems(done.items)
         if (!options?.silent) {
           setStatusMessage(
             queueData.items.length === 0
@@ -891,15 +952,17 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       const nextQuery =
         patch.q !== undefined ? patch.q : filterQuery.trim() || null
       setSearchParams(
-        (current) =>
-          patchSearchParams(current, {
-            month: nextMonth,
+        (current) => {
+          const next = patchSearchParams(current, {
+            month: monthParamForUrl(nextMonth, currentYearMonth()),
             account: nextAccount,
             kind: nextKind || null,
             q: nextQuery,
             section: null,
             tab: null,
-          }),
+          })
+          return searchParamsEqual(current, next) ? current : next
+        },
         { replace: mode === 'replace' },
       )
     },
@@ -924,10 +987,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     if (!isActive) {
       return
     }
-    const month = readMonthParam(searchParams)
-    if (month && month !== yearMonth) {
-      setYearMonth(month)
-    }
+    const nextMonth = resolveYearMonth(searchParams, currentYearMonth())
+    setYearMonth((current) => (current === nextMonth ? current : nextMonth))
     setFilterAccountKey(readAccountParam(searchParams) ?? '')
     setFilterKind(readKindParam(searchParams))
     const q = readQueryParam(searchParams) ?? ''
@@ -954,11 +1015,16 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     if (!isActive) {
       return
     }
+    const desiredQ = filterQuery.trim() || null
+    const urlQ = readQueryParam(searchParams)
+    if (desiredQ === urlQ || (desiredQ == null && urlQ == null)) {
+      return
+    }
     const handle = window.setTimeout(() => {
-      syncReconcileUrl({ q: filterQuery.trim() || null }, 'replace')
+      syncReconcileUrl({ q: desiredQ }, 'replace')
     }, 250)
     return () => window.clearTimeout(handle)
-  }, [filterQuery, syncReconcileUrl, isActive])
+  }, [filterQuery, syncReconcileUrl, isActive, searchParams])
 
   const loadIgnored = useCallback(async () => {
     setIgnoredLoading(true)
@@ -978,6 +1044,27 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setIgnoredOpen(true)
     void loadIgnored()
   }, [loadIgnored])
+
+  const loadDone = useCallback(async () => {
+    setDoneLoading(true)
+    try {
+      const data = await apiFetch<{ items: DoneItem[] }>(
+        `/api/reconciliation/done?from=${range.from}&to=${range.to}`,
+      )
+      setDoneItems(data.items)
+    } catch (err) {
+      onError(
+        err instanceof Error ? err.message : 'Erro ao carregar vinculados',
+      )
+    } finally {
+      setDoneLoading(false)
+    }
+  }, [apiFetch, onError, range.from, range.to])
+
+  const openDone = useCallback(() => {
+    setDoneOpen(true)
+    void loadDone()
+  }, [loadDone])
 
   const restoreIgnored = useCallback(
     async (pluggyTransactionId: string) => {
@@ -1001,6 +1088,36 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       }
     },
     [apiFetch, onError, loadQueue],
+  )
+
+  const undoDone = useCallback(
+    async (item: DoneItem) => {
+      setRestoringId(item.pluggyTransactionId)
+      onError(null)
+      try {
+        await apiFetch(
+          `/api/reconciliation/done/${item.pluggyTransactionId}?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`,
+          { method: 'DELETE' },
+        )
+        setDoneItems((current) =>
+          current.filter(
+            (entry) => entry.pluggyTransactionId !== item.pluggyTransactionId,
+          ),
+        )
+        setUndoConfirmItem(null)
+        setStatusMessage(
+          item.decision === 'LINKED'
+            ? 'Vínculo desfeito — item voltou para a fila.'
+            : 'Conciliação desfeita — item voltou para a fila.',
+        )
+        await loadQueue({ silent: true })
+      } catch (err) {
+        onError(err instanceof Error ? err.message : 'Erro ao desfazer')
+      } finally {
+        setRestoringId(null)
+      }
+    },
+    [apiFetch, onError, loadQueue, range.from, range.to],
   )
 
   const loadInvoices = useCallback(
@@ -1088,6 +1205,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setSearchQuery('')
     setSearchLinkAmount(linkAmountForItem(item))
     setSearchAccountKey(accountFilterKey(item.pluggy))
+    setSearchLinkAccountId(
+      item.pluggy.mappedTargetType === 'account'
+        ? String(item.pluggy.mappedOrganizzeTargetId)
+        : '',
+    )
     setSearchKind(
       item.pluggy.mappedTargetType === 'credit_card' ? 'credit_card' : 'account',
     )
@@ -1127,6 +1249,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setSearchPaid('all')
     setSearchKind('all')
     setSearchAccountKey('')
+    setSearchLinkAccountId('')
   }
 
   const searchCandidates = useMemo(() => {
@@ -1287,7 +1410,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const link = async (
     item: ReconciliationQueueItem,
     candidate: MatchCandidate,
-    options?: { amountCents?: number },
+    options?: { amountCents?: number; accountId?: number },
   ) => {
     const parcel =
       candidate.totalInstallments &&
@@ -1314,6 +1437,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           syncDate: true,
           ...(options?.amountCents !== undefined
             ? { amountCents: options.amountCents }
+            : {}),
+          ...(options?.accountId !== undefined
+            ? { accountId: options.accountId }
             : {}),
         }),
       })
@@ -1501,9 +1627,6 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   }
 
   const ignore = async (item: ReconciliationQueueItem) => {
-    if (!window.confirm('Ignorar esta transação? Ela sai da fila deste app.')) {
-      return
-    }
     setAction({
       pluggyId: item.pluggy.id,
       kind: 'ignore',
@@ -1517,6 +1640,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         method: 'POST',
         body: JSON.stringify({ from: range.from, to: range.to }),
       })
+      setIgnoreConfirmItem(null)
       await finishAction(item.pluggy.id, 'Transação ignorada.')
       void loadIgnored()
     } catch (err) {
@@ -1586,22 +1710,36 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         </div>
       ) : null}
 
-      {ignoredInMonth.length > 0 ? (
-        <div className="warning-banner ignored-warning">
-          <span>
-            {formatMonthTitle(yearMonth)} tem{' '}
-            <strong>{ignoredInMonth.length}</strong> lançamento
-            {ignoredInMonth.length === 1 ? '' : 's'} ignorado
-            {ignoredInMonth.length === 1 ? '' : 's'}.
-          </span>
-          <button
-            type="button"
-            className="warning-link"
-            disabled={toolbarBusy}
-            onClick={openIgnored}
-          >
-            Ver e restaurar
-          </button>
+      {doneItems.length > 0 || ignoredInMonth.length > 0 ? (
+        <div
+          className="recon-history"
+          aria-label={`Histórico de ${formatMonthTitle(yearMonth)}`}
+        >
+          <span className="recon-history-label">Neste mês</span>
+          <div className="recon-history-actions">
+            {doneItems.length > 0 ? (
+              <button
+                type="button"
+                className="recon-history-chip"
+                disabled={toolbarBusy}
+                onClick={openDone}
+              >
+                <strong>{doneItems.length}</strong>
+                conciliado{doneItems.length === 1 ? '' : 's'}
+              </button>
+            ) : null}
+            {ignoredInMonth.length > 0 ? (
+              <button
+                type="button"
+                className="recon-history-chip is-muted"
+                disabled={toolbarBusy}
+                onClick={openIgnored}
+              >
+                <strong>{ignoredInMonth.length}</strong>
+                ignorado{ignoredInMonth.length === 1 ? '' : 's'}
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -1632,8 +1770,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           <div className="empty">
             <strong>Fila vazia</strong>
             <p>
-              Nada pendente em {range.from} → {range.to}. Mapeie contas se ainda
-              não mapeou.
+              Nada pendente em {formatMonthTitle(yearMonth)}. Mapeie contas se
+              ainda não mapeou.
             </p>
           </div>
         </article>
@@ -2040,7 +2178,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     type="button"
                     className="btn ghost"
                     disabled={anyBusy}
-                    onClick={() => void ignore(item)}
+                    onClick={() => setIgnoreConfirmItem(item)}
                   >
                     {cardAction?.kind === 'ignore' ? 'Ignorando…' : 'Ignorar'}
                   </button>
@@ -2053,6 +2191,27 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         </>
       )}
       </PullToRefresh>
+
+      {ignoreConfirmItem ? (
+        <ConfirmDialog
+          title="Ignorar transação"
+          message="Ignorar esta transação? Ela sai da fila deste app."
+          confirmLabel="Ignorar"
+          busyLabel="Ignorando…"
+          busy={
+            action?.kind === 'ignore' &&
+            action.pluggyId === ignoreConfirmItem.pluggy.id
+          }
+          danger
+          onCancel={() => {
+            if (action?.kind === 'ignore') {
+              return
+            }
+            setIgnoreConfirmItem(null)
+          }}
+          onConfirm={() => void ignore(ignoreConfirmItem)}
+        />
+      ) : null}
 
       {createItem ? (
         <BottomSheet
@@ -2366,6 +2525,16 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 <strong>{searchItem.pluggy.description}</strong>
               </div>
               <div className="create-destination-row">
+                <span>Conta OF</span>
+                <strong>
+                  {organizzeDestinationLabel(
+                    searchItem.pluggy,
+                    creditCards,
+                    organizzeAccounts,
+                  )}
+                </strong>
+              </div>
+              <div className="create-destination-row">
                 <span>Valor / data</span>
                 <strong>
                   {formatBRL(searchItem.pluggy.organizzeAmountCents)} ·{' '}
@@ -2442,6 +2611,24 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               </label>
             </div>
 
+            {searchItem.pluggy.mappedTargetType === 'account' ? (
+              <label className="search-link-settle-account">
+                Conta no Organizze ao vincular
+                <OptionPicker
+                  value={searchLinkAccountId}
+                  disabled={modalBusy || searchLoading}
+                  searchable
+                  placeholder="Selecione a conta"
+                  options={searchLinkAccountOptions}
+                  onChange={setSearchLinkAccountId}
+                />
+                <small className="field-hint">
+                  Se o lançamento estiver em outra conta, escolha aqui onde o
+                  pagamento/recebimento deve ficar.
+                </small>
+              </label>
+            ) : null}
+
             <label>
               Valor no Organizze ao vincular (R$)
               <input
@@ -2484,6 +2671,15 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       action.candidateId === candidate.organizzeTransactionId
                     const destination = candidateDestination(candidate)
                     const ofAmountCents = searchItem.pluggy.organizzeAmountCents
+                    const linkAccountIdNum = searchLinkAccountId
+                      ? Number(searchLinkAccountId)
+                      : null
+                    const accountMismatch =
+                      searchItem.pluggy.mappedTargetType === 'account' &&
+                      linkAccountIdNum !== null &&
+                      Number.isFinite(linkAccountIdNum) &&
+                      candidate.accountId != null &&
+                      candidate.accountId !== linkAccountIdNum
                     const metaParts = [
                       formatSmartDate(candidate.date),
                       destination,
@@ -2494,6 +2690,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                           ? 'conta'
                           : null,
                       candidate.paid ? null : 'em aberto',
+                      accountMismatch ? 'outra conta' : null,
                     ].filter((part): part is string => Boolean(part))
                     const hasAmountDiff = candidate.amountDiffCents > 0
                     const hasDateDiff = candidate.daysDiff > 0
@@ -2509,6 +2706,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                           <span>{candidate.description}</span>
                           <small className="search-candidate-meta">
                             <span>{metaParts.join(' · ')}</span>
+                            {accountMismatch ? (
+                              <span className="search-account-mismatch">
+                                Ao vincular, move para a conta escolhida acima
+                              </span>
+                            ) : null}
                           </small>
                         </div>
                         <div className="suggestion-side is-inline">
@@ -2588,7 +2790,28 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                                 )
                                 return
                               }
-                              void link(searchItem, candidate, { amountCents })
+                              const accountId =
+                                searchItem.pluggy.mappedTargetType ===
+                                  'account' && searchLinkAccountId
+                                  ? Number(searchLinkAccountId)
+                                  : undefined
+                              if (
+                                searchItem.pluggy.mappedTargetType ===
+                                  'account' &&
+                                (accountId === undefined ||
+                                  !Number.isFinite(accountId))
+                              ) {
+                                onError(
+                                  'Selecione a conta do Organizze para o pagamento',
+                                )
+                                return
+                              }
+                              void link(searchItem, candidate, {
+                                amountCents,
+                                ...(accountId !== undefined
+                                  ? { accountId }
+                                  : {}),
+                              })
                             }}
                           >
                             {linkingThis ? (
@@ -2717,6 +2940,195 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               )}
             </div>
         </BottomSheet>
+      ) : null}
+
+      {doneOpen ? (
+        <BottomSheet
+          onClose={() => {
+            if (!restoringId && !undoConfirmItem) {
+              setDoneOpen(false)
+            }
+          }}
+          busy={Boolean(restoringId)}
+          labelledBy="done-title"
+          className="ignored-modal"
+          title="Conciliados"
+          subtitle={`Lançamentos já tratados em ${formatMonthTitle(yearMonth)}. Desfazer devolve o item à fila.`}
+        >
+          <div className="modal-body ignored-body">
+            {doneLoading ? (
+              <div className="empty loading-empty">
+                <span className="spinner lg" aria-hidden />
+                <strong>Carregando conciliados…</strong>
+              </div>
+            ) : doneItems.length === 0 ? (
+              <div className="empty">
+                <strong>Nenhum conciliado</strong>
+                <p>
+                  Vinculados, importados e pagamentos de fatura deste mês
+                  aparecem aqui.
+                </p>
+              </div>
+            ) : (
+              <ul className="ignored-list">
+                {doneItems.map((item) => {
+                  const snap = item.snapshot
+                  const busy = restoringId === item.pluggyTransactionId
+                  const ofAmountCents = snap?.organizzeAmountCents ?? null
+                  const ozAmountCents =
+                    snap?.organizzeLinkedAmountCents ?? null
+                  const ozName = snap?.organizzeDescription?.trim() || null
+                  const ozAccount =
+                    snap?.organizzeAccountName?.trim() || null
+                  const ofKind = snap?.kind ?? 'bank'
+                  const ozTypeLabel = organizzeTargetTypeLabel(
+                    snap?.organizzeTargetType,
+                  )
+                  return (
+                    <li key={item.id} className="ignored-row done-row">
+                      <div className="ignored-meta done-meta">
+                        <div className="recon-badges">
+                          <span className="badge">
+                            {doneDecisionLabel(item.decision)}
+                          </span>
+                          <span className={`badge ${kindClass(ofKind)}`}>
+                            {kindLabel(ofKind)}
+                          </span>
+                          {snap &&
+                          snap.totalInstallments &&
+                          snap.totalInstallments > 1 &&
+                          snap.installmentNumber ? (
+                            <span className="badge kind-installment">
+                              Parcela {snap.installmentNumber}/
+                              {snap.totalInstallments}
+                            </span>
+                          ) : null}
+                          {snap?.organizzeRecurring ? (
+                            <span className="badge kind-bank">Fixo</span>
+                          ) : null}
+                          {snap ? (
+                            <span className="badge">
+                              {formatDateBR(snap.date)}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {snap ? (
+                          <div className="done-compare">
+                            <div className="done-compare-col">
+                              <span className="done-compare-label">
+                                Open Finance
+                              </span>
+                              <span
+                                className={`badge ${kindClass(ofKind)} done-type-badge`}
+                              >
+                                {kindLabel(ofKind)}
+                              </span>
+                              <strong>
+                                {snap.description?.trim() || '—'}
+                              </strong>
+                              <span>{snap.accountName || '—'}</span>
+                              <strong
+                                className={`recon-amount ${
+                                  ofAmountCents != null && ofAmountCents < 0
+                                    ? 'neg'
+                                    : ofAmountCents != null && ofAmountCents > 0
+                                      ? 'pos'
+                                      : ''
+                                }`}
+                              >
+                                {ofAmountCents != null
+                                  ? formatBRL(ofAmountCents)
+                                  : '—'}
+                              </strong>
+                            </div>
+                            <div className="done-compare-col">
+                              <span className="done-compare-label">
+                                Organizze
+                              </span>
+                              {ozTypeLabel ? (
+                                <span
+                                  className={`badge ${
+                                    snap.organizzeTargetType === 'credit_card'
+                                      ? 'kind-credit'
+                                      : 'kind-bank'
+                                  } done-type-badge`}
+                                >
+                                  {ozTypeLabel}
+                                </span>
+                              ) : (
+                                <span className="done-type-badge-spacer" />
+                              )}
+                              <strong>{ozName ?? '—'}</strong>
+                              <span>{ozAccount ?? '—'}</span>
+                              <strong
+                                className={`recon-amount ${
+                                  ozAmountCents != null && ozAmountCents < 0
+                                    ? 'neg'
+                                    : ozAmountCents != null && ozAmountCents > 0
+                                      ? 'pos'
+                                      : ''
+                                }`}
+                              >
+                                {ozAmountCents != null
+                                  ? formatBRL(ozAmountCents)
+                                  : '—'}
+                              </strong>
+                            </div>
+                          </div>
+                        ) : (
+                          <span>
+                            Sem detalhes salvos (antes do snapshot)
+                          </span>
+                        )}
+                      </div>
+                      <div className="ignored-side">
+                        <button
+                          type="button"
+                          className="btn ghost"
+                          disabled={Boolean(restoringId)}
+                          onClick={() => setUndoConfirmItem(item)}
+                        >
+                          {busy ? (
+                            <>
+                              <span className="spinner sm" aria-hidden />
+                              Desfazendo…
+                            </>
+                          ) : (
+                            'Desfazer'
+                          )}
+                        </button>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        </BottomSheet>
+      ) : null}
+
+      {undoConfirmItem ? (
+        <ConfirmDialog
+          title="Desfazer conciliação"
+          message={
+            undoConfirmItem.decision === 'LINKED' &&
+            undoConfirmItem.snapshot?.organizzeRecurring
+              ? `Desfazer “${undoConfirmItem.snapshot?.description ?? 'este lançamento'}”? Como é um lançamento fixo, ele volta a ficar em aberto no Organizze e o item retorna à fila.`
+              : `Desfazer “${undoConfirmItem.snapshot?.description ?? 'este lançamento'}”? O lançamento correspondente no Organizze será excluído e o item volta para a fila.`
+          }
+          confirmLabel="Desfazer"
+          busyLabel="Desfazendo…"
+          busy={restoringId === undoConfirmItem.pluggyTransactionId}
+          danger
+          onCancel={() => {
+            if (restoringId) {
+              return
+            }
+            setUndoConfirmItem(null)
+          }}
+          onConfirm={() => void undoDone(undoConfirmItem)}
+        />
       ) : null}
     </section>
   )

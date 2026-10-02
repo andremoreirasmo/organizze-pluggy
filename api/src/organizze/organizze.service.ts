@@ -17,6 +17,7 @@ import {
   appendPluggyMarker,
   extractPluggyIds,
   notesContainPluggyId,
+  removePluggyMarker,
 } from './pluggy-notes';
 
 @Injectable()
@@ -239,6 +240,12 @@ export class OrganizzeService {
     });
   }
 
+  deleteTransaction(id: number): Promise<void> {
+    return this.request<void>(`/transactions/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   createInvoicePayment(
     creditCardId: number,
     invoiceId: number,
@@ -258,6 +265,13 @@ export class OrganizzeService {
     pluggyTransactionId: string,
   ): string {
     return appendPluggyMarker(notes, pluggyTransactionId);
+  }
+
+  removePluggyMarker(
+    notes: string | null | undefined,
+    pluggyTransactionId: string,
+  ): string {
+    return removePluggyMarker(notes, pluggyTransactionId);
   }
 
   extractPluggyIds(notes: string | null | undefined): string[] {

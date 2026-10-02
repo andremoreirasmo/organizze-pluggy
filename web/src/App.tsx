@@ -4,6 +4,7 @@ import './App.css'
 import { AppChrome } from './AppChrome'
 import { BalancesView } from './BalancesView'
 import { BottomSheet } from './BottomSheet'
+import { ConfirmDialog } from './ConfirmDialog'
 import { DashboardView } from './DashboardView'
 import { PullToRefresh } from './PullToRefresh'
 import { ReconciliationView } from './ReconciliationView'
@@ -443,6 +444,11 @@ function App() {
   const [addConnectionOpen, setAddConnectionOpen] = useState(false)
   const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    id: string
+    name: string
+  } | null>(null)
+  const [deletingConnection, setDeletingConnection] = useState(false)
   const [expandedMapChildren, setExpandedMapChildren] = useState<
     Record<string, boolean>
   >({})
@@ -1201,24 +1207,25 @@ function App() {
     [loadConfig, loadHomeData],
   )
 
-  const deleteConnection = useCallback(
-    async (id: string, name: string) => {
-      if (!window.confirm(`Remover a conexão “${name}”?`)) {
-        return
-      }
-      setError(null)
-      try {
-        await apiFetch(`/api/pluggy/connections/${id}`, {
-          method: 'DELETE',
-        })
-        await loadConfig()
-        await loadHomeData()
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Erro ao remover')
-      }
-    },
-    [loadConfig, loadHomeData],
-  )
+  const deleteConnection = useCallback(async () => {
+    if (!deleteConfirm) {
+      return
+    }
+    setError(null)
+    setDeletingConnection(true)
+    try {
+      await apiFetch(`/api/pluggy/connections/${deleteConfirm.id}`, {
+        method: 'DELETE',
+      })
+      setDeleteConfirm(null)
+      await loadConfig()
+      await loadHomeData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao remover')
+    } finally {
+      setDeletingConnection(false)
+    }
+  }, [deleteConfirm, loadConfig, loadHomeData])
 
   const logout = useCallback(async () => {
     suppressUnauthorizedHandler = true
@@ -1549,12 +1556,12 @@ function App() {
                           <button
                             type="button"
                             className="btn danger"
-                            disabled={saving}
+                            disabled={saving || deletingConnection}
                             onClick={() =>
-                              void deleteConnection(
-                                connection.id,
-                                connection.displayName,
-                              )
+                              setDeleteConfirm({
+                                id: connection.id,
+                                name: connection.displayName,
+                              })
                             }
                           >
                             Excluir
@@ -1566,6 +1573,24 @@ function App() {
                 )}
               </div>
             </article>
+            ) : null}
+
+            {deleteConfirm ? (
+              <ConfirmDialog
+                title="Remover conexão"
+                message={`Remover a conexão “${deleteConfirm.name}”?`}
+                confirmLabel="Remover"
+                busyLabel="Removendo…"
+                busy={deletingConnection}
+                danger
+                onCancel={() => {
+                  if (deletingConnection) {
+                    return
+                  }
+                  setDeleteConfirm(null)
+                }}
+                onConfirm={() => void deleteConnection()}
+              />
             ) : null}
 
             {addConnectionOpen ? (
