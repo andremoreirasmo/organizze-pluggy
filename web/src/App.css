@@ -1374,6 +1374,42 @@
   border: 1px solid transparent;
 }
 
+.suggestion-body {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.suggestion-body > span {
+  font-weight: 650;
+}
+
+.suggestion-side {
+  display: grid;
+  justify-items: end;
+  align-content: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+}
+
+.suggestion-amount {
+  font-size: 0.98rem;
+}
+
+.suggestion-side .btn {
+  min-width: 6.5rem;
+}
+
+.suggestion-side .match-hint {
+  justify-self: end;
+}
+
+.suggestion-side .match-hint-tooltip {
+  left: auto;
+  right: 0;
+}
+
 .link-amount-field {
   display: grid;
   gap: 0.35rem;
@@ -1416,8 +1452,128 @@
   overflow: auto;
 }
 
+.search-link-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.search-link-filters .picker,
+.search-link-filters .picker-trigger {
+  width: 100%;
+  min-width: 0;
+}
+
+.search-link-filters .picker-trigger {
+  min-height: 2.85rem;
+}
+
+.search-link-filters .search-link-account {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 560px) {
+  .search-link-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .search-link-filters .search-link-account {
+    grid-column: auto;
+  }
+}
+
 .search-link-results ul {
   margin: 0;
+}
+
+.search-candidate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
+}
+
+.match-hint {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.match-hint-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #c4a35a 55%, var(--oz-border));
+  background: color-mix(in srgb, #c4a35a 16%, var(--oz-surface));
+  color: #c9a227;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: help;
+  outline: none;
+}
+
+.match-hint-badge:hover,
+.match-hint-badge:focus-visible,
+.match-hint:hover .match-hint-badge {
+  border-color: #c4a35a;
+  background: color-mix(in srgb, #c4a35a 24%, var(--oz-surface));
+}
+
+.match-hint-tooltip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 0.4rem);
+  bottom: auto;
+  z-index: 5;
+  display: none;
+  grid-template-columns: 1fr;
+  gap: 0.2rem;
+  min-width: 13.5rem;
+  max-width: min(18rem, 70vw);
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--oz-border);
+  border-radius: 10px;
+  background: var(--oz-surface);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  color: var(--oz-ink);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.match-hint-tooltip strong {
+  display: block;
+  margin-bottom: 0.15rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.match-hint-tooltip span {
+  display: block;
+  color: var(--oz-muted);
+}
+
+.match-hint-tooltip em {
+  color: var(--oz-ink);
+  font-style: normal;
+  font-weight: 650;
+}
+
+.match-hint-tooltip .match-hint-note {
+  margin-top: 0.25rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--oz-border);
+  font-size: 0.72rem;
+}
+
+.match-hint:hover .match-hint-tooltip,
+.match-hint:focus-within .match-hint-tooltip {
+  display: grid;
 }
 
 .recon-expand {
@@ -1558,6 +1714,12 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  outline: none;
+}
+
+.picker-trigger:focus-visible {
+  border-color: #8faf73;
+  box-shadow: 0 0 0 3px rgba(95, 143, 62, 0.12);
 }
 
 .picker-trigger:disabled {
@@ -1632,6 +1794,16 @@
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+}
+
+.picker-panel-portal .picker-option,
+.picker-panel-portal .picker-option-text {
+  min-width: max-content;
+}
+
+.picker-panel-portal .picker-option-text strong {
+  overflow: visible;
+  text-overflow: unset;
 }
 
 .picker-panel-portal > * {
@@ -2287,8 +2459,30 @@
     gap: 0.55rem;
   }
 
-  .suggestions li .btn {
+  .suggestion-side {
     width: 100%;
+    grid-template-columns: 1fr auto;
+    justify-items: start;
+    align-items: center;
+    gap: 0.45rem 0.75rem;
+  }
+
+  .suggestion-side .match-hint {
+    justify-self: start;
+    grid-column: 1;
+  }
+
+  .suggestion-side .btn {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    width: auto;
+    min-width: 6.5rem;
+    min-height: 2.75rem;
+    align-self: center;
+  }
+
+  .suggestions li .btn {
+    width: auto;
     min-height: 2.75rem;
   }
 
@@ -2441,6 +2635,51 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
+}
+
+.balance-card-head > div:first-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.badge.balance-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 6rem;
+  height: 1.5rem;
+  padding: 0 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge.balance-status.is-ok {
+  background: #e8f0e2;
+  color: #2f6b2f;
+}
+
+.badge.balance-status.is-diverged {
+  background: #f8ebe2;
+  color: #8a3f1c;
+}
+
+.badge.balance-status.is-muted {
+  width: auto;
+  min-width: 6rem;
+  max-width: 100%;
+  background: #eef2f8;
+  color: #3b4a63;
 }
 
 .balance-card-sub {
@@ -3843,6 +4082,15 @@ html[data-theme='dark'] .recon-expand input {
   border-color: var(--oz-border);
 }
 
+html[data-theme='dark'] .cat-icon {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='dark'] .cat-icon.muted {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--oz-muted);
+}
+
 html[data-theme='dark'] input::placeholder,
 html[data-theme='dark'] textarea::placeholder,
 html[data-theme='dark'] .picker-search::placeholder {
@@ -3949,16 +4197,19 @@ html[data-theme='dark'] .badge.kind-transfer {
   color: #b4c4ff;
 }
 
-html[data-theme='dark'] .badge.ok,
-html[data-theme='dark'] .status-ok {
-  background: var(--oz-green-tint);
-  color: var(--oz-green-deep);
+html[data-theme='dark'] .badge.balance-status.is-ok {
+  background: color-mix(in srgb, var(--oz-green) 18%, var(--oz-surface-2));
+  color: #9aefb4;
 }
 
-html[data-theme='dark'] .badge.diverged,
-html[data-theme='dark'] .status-diverged {
-  background: var(--oz-danger-bg);
-  color: var(--oz-danger);
+html[data-theme='dark'] .badge.balance-status.is-diverged {
+  background: color-mix(in srgb, #e8a87c 20%, var(--oz-surface-2));
+  color: #f0c4a8;
+}
+
+html[data-theme='dark'] .badge.balance-status.is-muted {
+  background: var(--oz-surface-3);
+  color: var(--oz-muted);
 }
 
 html[data-theme='dark'] .balance-card.is-ok {

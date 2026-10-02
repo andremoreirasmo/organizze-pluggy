@@ -4,6 +4,7 @@ import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
 import { CreditCardPicker } from './CreditCardPicker'
 import { FilterDropdown } from './FilterDropdown'
+import { OptionPicker } from './OptionPicker'
 import {
   InvoicePicker,
   formatInvoiceDate,
@@ -611,7 +612,12 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [searchRows, setSearchRows] = useState<OrganizzeTransactionRow[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchLinkAmount, setSearchLinkAmount] = useState('')
-  const [searchOnlyMapped, setSearchOnlyMapped] = useState(true)
+  const [searchAccountKey, setSearchAccountKey] = useState('')
+  const [searchKind, setSearchKind] = useState<'all' | 'account' | 'credit_card'>(
+    'all',
+  )
+  const [searchCategoryId, setSearchCategoryId] = useState('')
+  const [searchPaid, setSearchPaid] = useState<'all' | 'open' | 'paid'>('all')
   const [linkAmountInputs, setLinkAmountInputs] = useState<
     Record<string, string>
   >({})
@@ -661,6 +667,29 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       .map(([value, label]) => ({ value, label }))
       .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
   }, [queue, creditCards, organizzeAccounts])
+
+  const searchDestinationOptions = useMemo(() => {
+    const accounts = organizzeAccounts
+      .filter((account) => !account.archived)
+      .map((account) => ({
+        value: `account|${account.id}`,
+        label: account.name,
+        hint: 'Conta',
+      }))
+    const cards = creditCards
+      .filter((card) => !card.archived)
+      .map((card) => ({
+        value: `credit_card|${card.id}`,
+        label: card.name,
+        hint: 'Cartão',
+      }))
+    return [
+      { value: '', label: 'Todas' },
+      ...[...accounts, ...cards].sort((a, b) =>
+        a.label.localeCompare(b.label, 'pt-BR'),
+      ),
+    ]
+  }, [organizzeAccounts, creditCards])
 
   const filteredItems = useMemo(() => {
     if (!queue) {
@@ -999,15 +1028,20 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
   const openSearchModal = (item: ReconciliationQueueItem) => {
     setSearchItem(item)
-    setSearchQuery(item.pluggy.description.slice(0, 40))
+    setSearchQuery('')
     setSearchLinkAmount(
       formatSignedAmountInput(item.pluggy.organizzeAmountCents),
     )
-    setSearchOnlyMapped(true)
+    setSearchAccountKey(accountFilterKey(item.pluggy))
+    setSearchKind(
+      item.pluggy.mappedTargetType === 'credit_card' ? 'credit_card' : 'account',
+    )
+    setSearchCategoryId('')
+    setSearchPaid('all')
     setSearchRows([])
     onError(null)
-    const from = shiftIsoDate(item.pluggy.date.slice(0, 10), -45)
-    const to = shiftIsoDate(item.pluggy.date.slice(0, 10), 45)
+    const from = shiftIsoDate(item.pluggy.date.slice(0, 10), -90)
+    const to = shiftIsoDate(item.pluggy.date.slice(0, 10), 90)
     setSearchLoading(true)
     void apiFetch<OrganizzeTransactionRow[]>(
       `/api/organizze/transactions?startDate=${encodeURIComponent(from)}&endDate=${encodeURIComponent(to)}`,
@@ -1034,6 +1068,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setSearchItem(null)
     setSearchRows([])
     setSearchQuery('')
+    setSearchCategoryId('')
+    setSearchPaid('all')
+    setSearchKind('all')
+    setSearchAccountKey('')
   }
 
   const searchCandidates = useMemo(() => {
@@ -1041,53 +1079,125 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       return [] as MatchCandidate[]
     }
     const q = searchQuery.trim().toLowerCase()
-    const mappedId = searchItem.pluggy.mappedOrganizzeTargetId
-    const isCard = searchItem.pluggy.mappedTargetType === 'credit_card'
-    const filtered = searchRows.filter((tx) => {
-      if (notesAlreadyLinked(tx.notes)) {
-        return false
-      }
-      if (searchOnlyMapped) {
-        if (isCard) {
-          if (tx.credit_card_id !== mappedId) {
-            return false
+    const qParts = q.split(/\s+/).filter(Boolean)
+    const categoryFilterId = searchCategoryId
+      ? Number(searchCategoryId)
+      : null
+    const accountFilter = searchAccountKey
+      ? (() => {
+          const [type, idRaw] = searchAccountKey.split('|')
+          const id = Number(idRaw)
+          if (
+            (type !== 'account' && type !== 'credit_card') ||
+            !Number.isFinite(id)
+          ) {
+            return null
           }
-        } else if (tx.account_id !== mappedId) {
+          return { type, id } as const
+        })()
+      : null
+
+    const scored = searchRows
+      .filter((tx) => {
+        if (notesAlreadyLinked(tx.notes)) {
           return false
         }
-      }
-      if (!q) {
+        if (accountFilter) {
+          if (accountFilter.type === 'credit_card') {
+            if (tx.credit_card_id !== accountFilter.id) {
+              return false
+            }
+          } else if (tx.account_id !== accountFilter.id) {
+            return false
+          }
+        }
+        if (searchKind === 'account' && !tx.account_id) {
+          return false
+        }
+        if (searchKind === 'credit_card' && !tx.credit_card_id) {
+          return false
+        }
+        if (
+          categoryFilterId !== null &&
+          tx.category_id !== categoryFilterId
+        ) {
+          return false
+        }
+        if (searchPaid === 'open' && tx.paid) {
+          return false
+        }
+        if (searchPaid === 'paid' && !tx.paid) {
+          return false
+        }
         return true
-      }
-      const amountText = (tx.amount_cents / 100).toFixed(2).replace('.', ',')
-      const haystack =
-        `${tx.description} ${tx.date} ${tx.id} ${amountText} ${Math.abs(tx.amount_cents)}`.toLowerCase()
-      return haystack.includes(q) || q.split(/\s+/).every((part) => haystack.includes(part))
-    })
-
-    return filtered
-      .map((tx) =>
-        toSearchCandidate(
+      })
+      .map((tx) => {
+        const candidate = toSearchCandidate(
           tx,
           searchItem.pluggy,
           organizzeAccounts,
           creditCards,
           categories,
-        ),
-      )
-      .sort((a, b) => {
-        const amountCmp = a.amountDiffCents - b.amountDiffCents
-        if (amountCmp !== 0) {
-          return amountCmp
+        )
+        const categoryName = candidate.categoryName ?? ''
+        const destination = candidateDestination(candidate) ?? ''
+        const kindLabel = tx.credit_card_id
+          ? 'cartao cartão credit'
+          : 'conta banco account'
+        const paidLabel = tx.paid ? 'pago pago' : 'aberto em aberto unpaid'
+        const amountText = (tx.amount_cents / 100).toFixed(2).replace('.', ',')
+        const haystack =
+          `${tx.description} ${categoryName} ${destination} ${kindLabel} ${paidLabel} ${tx.date} ${tx.id} ${amountText}`.toLowerCase()
+
+        let textScore = 0
+        if (qParts.length > 0) {
+          const allMatch = qParts.every((part) => haystack.includes(part))
+          if (!allMatch) {
+            return null
+          }
+          // Prefer description hits over peripheral fields.
+          const desc = tx.description.toLowerCase()
+          const cat = categoryName.toLowerCase()
+          textScore = qParts.reduce((score, part) => {
+            if (desc.includes(part)) {
+              return score
+            }
+            if (cat.includes(part)) {
+              return score + 1
+            }
+            return score + 2
+          }, 0)
         }
-        return a.daysDiff - b.daysDiff
+
+        return { candidate, textScore }
       })
-      .slice(0, 40)
+      .filter(
+        (
+          entry,
+        ): entry is { candidate: MatchCandidate; textScore: number } =>
+          entry !== null,
+      )
+
+    return scored
+      .sort((a, b) => {
+        if (a.textScore !== b.textScore) {
+          return a.textScore - b.textScore
+        }
+        if (a.candidate.daysDiff !== b.candidate.daysDiff) {
+          return a.candidate.daysDiff - b.candidate.daysDiff
+        }
+        return a.candidate.amountDiffCents - b.candidate.amountDiffCents
+      })
+      .map((entry) => entry.candidate)
+      .slice(0, 60)
   }, [
     searchItem,
     searchQuery,
     searchRows,
-    searchOnlyMapped,
+    searchAccountKey,
+    searchKind,
+    searchCategoryId,
+    searchPaid,
     organizzeAccounts,
     creditCards,
     categories,
@@ -1698,7 +1808,6 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                         const destination = candidateDestination(candidate)
                         const metaParts = [
                           formatSmartDate(candidate.date),
-                          formatBRL(candidate.amountCents),
                           destination,
                           candidate.categoryName,
                           candidate.totalInstallments &&
@@ -1709,38 +1818,55 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                           candidate.paid ? null : 'em aberto',
                           candidate.recurring ? 'fixo' : null,
                         ].filter((part): part is string => Boolean(part))
+                        const amountClass =
+                          candidate.amountCents < 0
+                            ? 'neg'
+                            : candidate.amountCents > 0
+                              ? 'pos'
+                              : ''
                         return (
                           <li key={candidate.organizzeTransactionId}>
-                            <div>
+                            <div className="suggestion-body">
                               <span>{candidate.description}</span>
                               <small>{metaParts.join(' · ')}</small>
                             </div>
-                            <button
-                              type="button"
-                              className="btn"
-                              disabled={anyBusy}
-                              onClick={() => {
-                                const amountCents = parseSignedBRLInputToCents(
-                                  linkAmountForItem(item),
-                                )
-                                if (amountCents === null || amountCents === 0) {
-                                  onError(
-                                    'Informe um valor válido para o Organizze',
-                                  )
-                                  return
-                                }
-                                void link(item, candidate, { amountCents })
-                              }}
-                            >
-                              {linkingThis ? (
-                                <>
-                                  <span className="spinner sm" aria-hidden />
-                                  Vinculando…
-                                </>
-                              ) : (
-                                'Vincular'
-                              )}
-                            </button>
+                            <div className="suggestion-side">
+                              <div
+                                className={`recon-amount suggestion-amount ${amountClass}`}
+                              >
+                                {formatBRL(candidate.amountCents)}
+                              </div>
+                              <button
+                                type="button"
+                                className="btn"
+                                disabled={anyBusy}
+                                onClick={() => {
+                                  const amountCents =
+                                    parseSignedBRLInputToCents(
+                                      linkAmountForItem(item),
+                                    )
+                                  if (
+                                    amountCents === null ||
+                                    amountCents === 0
+                                  ) {
+                                    onError(
+                                      'Informe um valor válido para o Organizze',
+                                    )
+                                    return
+                                  }
+                                  void link(item, candidate, { amountCents })
+                                }}
+                              >
+                                {linkingThis ? (
+                                  <>
+                                    <span className="spinner sm" aria-hidden />
+                                    Vinculando…
+                                  </>
+                                ) : (
+                                  'Vincular'
+                                )}
+                              </button>
+                            </div>
                           </li>
                         )
                       })}
@@ -2085,7 +2211,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           busy={modalBusy || searchLoading}
           labelledBy="search-link-title"
           title="Buscar lançamento"
-          subtitle="Procure qualquer lançamento no Organizze (mesmo com valor bem diferente) e vincule a este item do Open Finance."
+          subtitle="Busque por descrição, categoria ou tipo — o valor não precisa ser igual. Ao vincular, você define o valor no Organizze."
         >
           {modalBusy ? (
             <div className="modal-loading" role="status">
@@ -2115,27 +2241,68 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               <input
                 value={searchQuery}
                 disabled={modalBusy || searchLoading}
-                placeholder="Descrição, valor ou data…"
+                placeholder="Descrição, categoria, conta…"
                 autoFocus
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </label>
 
-            <label className="balance-source-toggle">
-              <input
-                type="checkbox"
-                checked={searchOnlyMapped}
-                disabled={modalBusy || searchLoading}
-                onChange={(event) => setSearchOnlyMapped(event.target.checked)}
-              />
-              <span>
-                Só no destino mapeado (
-                {searchItem.pluggy.mappedTargetType === 'credit_card'
-                  ? 'cartão'
-                  : 'conta'}{' '}
-                #{searchItem.pluggy.mappedOrganizzeTargetId})
-              </span>
-            </label>
+            <div className="search-link-filters">
+              <label>
+                Tipo
+                <OptionPicker
+                  value={searchKind}
+                  disabled={modalBusy || searchLoading}
+                  options={[
+                    { value: 'all', label: 'Todos' },
+                    { value: 'account', label: 'Conta' },
+                    { value: 'credit_card', label: 'Cartão' },
+                  ]}
+                  onChange={(value) =>
+                    setSearchKind(value as 'all' | 'account' | 'credit_card')
+                  }
+                />
+              </label>
+              <label>
+                Categoria
+                <CategoryPicker
+                  categories={categories}
+                  value={searchCategoryId}
+                  amountCents={searchItem.pluggy.organizzeAmountCents}
+                  kindMode="all"
+                  emptyLabel="Todas"
+                  triggerMode="simple"
+                  disabled={modalBusy || searchLoading}
+                  onChange={setSearchCategoryId}
+                />
+              </label>
+              <label>
+                Situação
+                <OptionPicker
+                  value={searchPaid}
+                  disabled={modalBusy || searchLoading}
+                  options={[
+                    { value: 'all', label: 'Todas' },
+                    { value: 'open', label: 'Em aberto' },
+                    { value: 'paid', label: 'Pagas' },
+                  ]}
+                  onChange={(value) =>
+                    setSearchPaid(value as 'all' | 'open' | 'paid')
+                  }
+                />
+              </label>
+              <label className="search-link-account">
+                Conta
+                <OptionPicker
+                  value={searchAccountKey}
+                  disabled={modalBusy || searchLoading}
+                  searchable
+                  placeholder="Todas"
+                  options={searchDestinationOptions}
+                  onChange={setSearchAccountKey}
+                />
+              </label>
+            </div>
 
             <label>
               Valor no Organizze ao vincular (R$)
@@ -2156,8 +2323,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               <div className="empty">
                 <strong>Nenhum lançamento encontrado</strong>
                 <p>
-                  Ajuste o texto da busca ou desmarque o filtro do destino
-                  mapeado.
+                  Ajuste o texto ou os filtros de tipo, categoria, situação e
+                  conta. O valor não precisa ser o mesmo.
                 </p>
               </div>
             ) : (
@@ -2167,7 +2334,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     {searchCandidates.length} resultado
                     {searchCandidates.length === 1 ? '' : 's'}
                   </strong>
-                  <span>±45 dias em torno de {formatSmartDate(searchItem.pluggy.date)}</span>
+                  <span>
+                    ±90 dias em torno de{' '}
+                    {formatSmartDate(searchItem.pluggy.date)}
+                  </span>
                 </div>
                 <ul>
                   {searchCandidates.map((candidate) => {
@@ -2175,48 +2345,122 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       action?.kind === 'link' &&
                       action.candidateId === candidate.organizzeTransactionId
                     const destination = candidateDestination(candidate)
+                    const ofAmountCents = searchItem.pluggy.organizzeAmountCents
                     const metaParts = [
                       formatSmartDate(candidate.date),
-                      formatBRL(candidate.amountCents),
                       destination,
                       candidate.categoryName,
-                      candidate.amountDiffCents > 0
-                        ? `Δ ${formatBRL(candidate.amountDiffCents)}`
-                        : 'mesmo valor',
+                      candidate.creditCardId
+                        ? 'cartão'
+                        : candidate.accountId
+                          ? 'conta'
+                          : null,
                       candidate.paid ? null : 'em aberto',
                     ].filter((part): part is string => Boolean(part))
+                    const hasAmountDiff = candidate.amountDiffCents > 0
+                    const hasDateDiff = candidate.daysDiff > 0
+                    const amountClass =
+                      candidate.amountCents < 0
+                        ? 'neg'
+                        : candidate.amountCents > 0
+                          ? 'pos'
+                          : ''
                     return (
                       <li key={candidate.organizzeTransactionId}>
-                        <div>
+                        <div className="suggestion-body">
                           <span>{candidate.description}</span>
-                          <small>{metaParts.join(' · ')}</small>
+                          <small className="search-candidate-meta">
+                            <span>{metaParts.join(' · ')}</span>
+                          </small>
                         </div>
-                        <button
-                          type="button"
-                          className="btn"
-                          disabled={modalBusy}
-                          onClick={() => {
-                            const amountCents = parseSignedBRLInputToCents(
-                              searchLinkAmount,
-                            )
-                            if (amountCents === null || amountCents === 0) {
-                              onError(
-                                'Informe um valor válido para o Organizze',
+                        <div className="suggestion-side">
+                          <div
+                            className={`recon-amount suggestion-amount ${amountClass}`}
+                          >
+                            {formatBRL(candidate.amountCents)}
+                          </div>
+                          {hasAmountDiff || hasDateDiff ? (
+                            <span className="match-hint">
+                              <span className="match-hint-badge" tabIndex={0}>
+                                {hasAmountDiff
+                                  ? `≠ ${formatBRL(candidate.amountDiffCents)}`
+                                  : null}
+                                {hasAmountDiff && hasDateDiff ? ' · ' : null}
+                                {hasDateDiff
+                                  ? `${candidate.daysDiff}d`
+                                  : null}
+                              </span>
+                              <span
+                                className="match-hint-tooltip"
+                                role="tooltip"
+                              >
+                                <strong>Comparado ao Open Finance</strong>
+                                {hasAmountDiff ? (
+                                  <>
+                                    <span>
+                                      Open Finance:{' '}
+                                      <em>{formatBRL(ofAmountCents)}</em>
+                                    </span>
+                                    <span>
+                                      Neste lançamento:{' '}
+                                      <em>
+                                        {formatBRL(candidate.amountCents)}
+                                      </em>
+                                    </span>
+                                    <span>
+                                      Diferença:{' '}
+                                      <em>
+                                        {formatBRL(candidate.amountDiffCents)}
+                                      </em>
+                                    </span>
+                                  </>
+                                ) : null}
+                                {hasDateDiff ? (
+                                  <span>
+                                    Datas:{' '}
+                                    <em>
+                                      {candidate.daysDiff}{' '}
+                                      {candidate.daysDiff === 1
+                                        ? 'dia'
+                                        : 'dias'}{' '}
+                                      de diferença
+                                    </em>
+                                  </span>
+                                ) : null}
+                                <span className="match-hint-note">
+                                  Ao vincular, o valor usado é o do campo
+                                  acima.
+                                </span>
+                              </span>
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={modalBusy}
+                            onClick={() => {
+                              const amountCents = parseSignedBRLInputToCents(
+                                searchLinkAmount,
                               )
-                              return
-                            }
-                            void link(searchItem, candidate, { amountCents })
-                          }}
-                        >
-                          {linkingThis ? (
-                            <>
-                              <span className="spinner sm" aria-hidden />
-                              Vinculando…
-                            </>
-                          ) : (
-                            'Vincular'
-                          )}
-                        </button>
+                              if (amountCents === null || amountCents === 0) {
+                                onError(
+                                  'Informe um valor válido para o Organizze',
+                                )
+                                return
+                              }
+                              void link(searchItem, candidate, { amountCents })
+                            }}
+                          >
+                            {linkingThis ? (
+                              <>
+                                <span className="spinner sm" aria-hidden />
+                                Vinculando…
+                              </>
+                            ) : (
+                              'Vincular'
+                            )}
+                          </button>
+                        </div>
                       </li>
                     )
                   })}

@@ -17,8 +17,18 @@ type Props = {
   onChange: (categoryId: string) => void
   /** When amount is negative, only expenses; when positive, only earnings */
   amountCents: number
+  /** Show expenses + earnings (search filters). Default follows amountCents. */
+  kindMode?: 'auto' | 'all'
   disabled?: boolean
   placeholder?: string
+  emptyLabel?: string
+  /** Minimum panel width (useful when the trigger is narrow in a filter row). */
+  minWidth?: number
+  /**
+   * `full` = icon + subtitle (forms).
+   * `simple` = label only, matching OptionPicker filters.
+   */
+  triggerMode?: 'full' | 'simple'
 }
 
 const GROUP_ICONS: Record<string, string> = {
@@ -133,8 +143,12 @@ export function CategoryPicker({
   value,
   onChange,
   amountCents,
+  kindMode = 'auto',
   disabled = false,
   placeholder = 'Buscar categoria…',
+  emptyLabel = 'Sem categoria',
+  minWidth,
+  triggerMode = 'full',
 }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -142,6 +156,7 @@ export function CategoryPicker({
   const panelRef = useRef<HTMLDivElement | null>(null)
 
   const wantedKind = amountCents < 0 ? 'expenses' : 'earnings'
+  const showAllKinds = kindMode === 'all'
 
   const usable = useMemo(() => {
     const isArchived = (value: unknown): boolean =>
@@ -163,13 +178,17 @@ export function CategoryPicker({
         return false
       }
 
+      if (showAllKinds) {
+        return true
+      }
+
       const kind = (category.kind ?? 'none').toLowerCase()
       if (kind === 'none') {
         return true
       }
       return kind === wantedKind
     })
-  }, [categories, wantedKind])
+  }, [categories, wantedKind, showAllKinds])
 
   const byId = useMemo(() => {
     const map = new Map<number, CategoryOption>()
@@ -269,7 +288,17 @@ export function CategoryPicker({
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        {selected ? (
+        {triggerMode === 'simple' ? (
+          selected || value === '' ? (
+            <span className="picker-value">
+              <span className="picker-value-text">
+                <strong>{selected ? selectedLabel : emptyLabel}</strong>
+              </span>
+            </span>
+          ) : (
+            <span className="picker-placeholder">{placeholder}</span>
+          )
+        ) : selected ? (
           <span className="picker-value">
             <span
               className="cat-icon"
@@ -280,13 +309,24 @@ export function CategoryPicker({
             <span className="picker-value-text">
               <strong>{selectedLabel}</strong>
               <small>
-                {wantedKind === 'expenses' ? 'Despesa' : 'Receita'}
+                {showAllKinds
+                  ? 'Categoria'
+                  : wantedKind === 'expenses'
+                    ? 'Despesa'
+                    : 'Receita'}
               </small>
+            </span>
+          </span>
+        ) : value === '' ? (
+          <span className="picker-value">
+            <span className="cat-icon muted">—</span>
+            <span className="picker-value-text">
+              <strong>{emptyLabel}</strong>
             </span>
           </span>
         ) : (
           <span className="picker-placeholder">
-            Escolher categoria ({wantedKind === 'expenses' ? 'despesa' : 'receita'})
+            {`Escolher categoria (${wantedKind === 'expenses' ? 'despesa' : 'receita'})`}
           </span>
         )}
         <span className="picker-caret" aria-hidden>
@@ -298,6 +338,7 @@ export function CategoryPicker({
         open={open}
         triggerRef={triggerRef}
         panelRef={panelRef}
+        minWidth={minWidth}
         onClose={() => {
           setOpen(false)
           setQuery('')
@@ -321,7 +362,7 @@ export function CategoryPicker({
             }}
           >
             <span className="cat-icon muted">—</span>
-            <span>Sem categoria</span>
+            <span>{emptyLabel}</span>
           </button>
           {rows.length === 0 ? (
             <p className="picker-empty">Nenhuma categoria encontrada</p>
