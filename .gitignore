@@ -13,4 +13,6 @@ api/dist/
 .cursor/
 *.tsbuildinfo
 .prisma/
+PLAN.md
 PLAN-*.md
+plans/

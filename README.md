@@ -252,7 +252,6 @@ Checklist:
 | [`web/src`](web/src) | SPA (rotas em `routes.ts`) |
 | [`api/prisma`](api/prisma) | Schema e migrations |
 | [`.env.example`](.env.example) | Template de secrets |
-| [`PLAN.md`](PLAN.md) | Desenho / decisões do projeto |
 
 ---
 
