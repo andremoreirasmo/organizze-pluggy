@@ -209,6 +209,12 @@ function currentYearMonth(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
 
+function shiftYearMonth(yearMonth: string, delta: number): string {
+  const [year, month] = yearMonth.split('-').map(Number)
+  const utc = new Date(Date.UTC(year, month - 1 + delta, 1))
+  return `${utc.getUTCFullYear()}-${String(utc.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
 function formatBRL(amountCents: number): string {
   return (amountCents / 100).toLocaleString('pt-BR', {
     style: 'currency',
@@ -548,11 +554,14 @@ function formatMonthTitle(yearMonth: string): string {
   if (!year || !month) {
     return yearMonth
   }
-  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('pt-BR', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  })
+  const monthName = new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString(
+    'pt-BR',
+    {
+      month: 'long',
+      timeZone: 'UTC',
+    },
+  )
+  return `${monthName.charAt(0).toUpperCase()}${monthName.slice(1)} ${year}`
 }
 
 function sortInvoicesDesc(invoices: OrganizzeInvoice[]): OrganizzeInvoice[] {
@@ -1655,27 +1664,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         onRefresh={() => loadQueue()}
         disabled={toolbarBusy}
       >
-      <div className="hero-panel">
-        <div>
+      <div className="hero-panel recon-hero">
+        <div className="recon-hero-top">
           <h1>
             Fila de <em>conciliação</em>
           </h1>
-          <p>
-            Compare Open Finance com o Organizze. <strong>Vincular</strong>{' '}
-            marca um lançamento existente como pago;{' '}
-            <strong>Importar</strong> cria um novo.
-          </p>
-        </div>
-        <div className="recon-toolbar">
-          <label className="month-picker">
-            Mês
-            <input
-              type="month"
-              value={yearMonth}
-              disabled={toolbarBusy}
-              onChange={(event) => changeYearMonth(event.target.value)}
-            />
-          </label>
           <div className="recon-toolbar-actions">
             <button
               type="button"
@@ -1696,6 +1689,40 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               Abrir MeuPluggy
             </a>
           </div>
+        </div>
+        <p>
+          Compare Open Finance com o Organizze. <strong>Vincular</strong>{' '}
+          marca um lançamento existente como pago; <strong>Importar</strong>{' '}
+          cria um novo.
+        </p>
+        <div className="recon-month" aria-label="Mês da conciliação">
+          <button
+            type="button"
+            className="recon-month-arrow"
+            disabled={toolbarBusy}
+            aria-label="Mês anterior"
+            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, -1))}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="recon-month-label"
+            disabled={toolbarBusy}
+            title="Ir para o mês atual"
+            onClick={() => changeYearMonth(currentYearMonth())}
+          >
+            {formatMonthTitle(yearMonth)}
+          </button>
+          <button
+            type="button"
+            className="recon-month-arrow"
+            disabled={toolbarBusy}
+            aria-label="Próximo mês"
+            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, 1))}
+          >
+            ›
+          </button>
         </div>
       </div>
 
