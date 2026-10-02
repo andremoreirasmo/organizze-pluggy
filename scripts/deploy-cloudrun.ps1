@@ -1,11 +1,16 @@
-# Deploy organizze-pluggy to Cloud Run (southamerica-east1).
+# Deploy organizze-pluggy to Cloud Run.
 # Reads secrets from repo-root .env — does not print values.
+# Set GCP_PROJECT_ID in the environment or pass -ProjectId (never commit your project id).
 param(
-  [string]$ProjectId = "brazuca-rd",
-  [string]$Region = "southamerica-east1",
-  [string]$Service = "organizze-pluggy",
+  [string]$ProjectId = $env:GCP_PROJECT_ID,
+  [string]$Region = $(if ($env:GCP_REGION) { $env:GCP_REGION } else { "southamerica-east1" }),
+  [string]$Service = $(if ($env:GCP_SERVICE_NAME) { $env:GCP_SERVICE_NAME } else { "organizze-pluggy" }),
   [string]$EnvFile = ""
 )
+
+if ([string]::IsNullOrWhiteSpace($ProjectId)) {
+  throw "Missing GCP project. Set env GCP_PROJECT_ID or pass -ProjectId."
+}
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot

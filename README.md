@@ -217,21 +217,50 @@ Demais `/api/*` exigem sessão.
 
 Há um `Dockerfile` multi-stage (Node 22): build do `web` + `api`, Nest serve a SPA.
 
+### Automático (GitHub Actions)
+
+A cada **push na `master`**, o workflow [`.github/workflows/deploy-cloudrun.yml`](.github/workflows/deploy-cloudrun.yml) roda `prisma migrate deploy` e `gcloud run deploy --source`.
+
+Configure no repositório (**Settings → Secrets and variables → Actions**):
+
+**Variable (obrigatória)**
+
+| Nome | Exemplo |
+|------|---------|
+| `GCP_PROJECT_ID` | seu projeto no GCP |
+
+**Variables (opcionais)**
+
+| Nome | Default no workflow |
+|------|---------------------|
+| `GCP_REGION` | `southamerica-east1` |
+| `GCP_SERVICE_NAME` | `organizze-pluggy` |
+
+**Secrets (obrigatórios)** — mesmos nomes do [`.env.example`](.env.example), mais:
+
+| Nome | Uso |
+|------|-----|
+| `GCP_SA_KEY` | JSON da service account com permissão de Cloud Run + Cloud Build |
+
+Secrets da aplicação: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_ALLOWED_EMAILS`, `SESSION_SECRET`, `ORGANIZZE_EMAIL`, `ORGANIZZE_API_TOKEN`, `ORGANIZZE_USER_AGENT`, `PLUGGY_CLIENT_ID`, `PLUGGY_CLIENT_SECRET`.
+
+Depois do deploy, o log do workflow mostra a URL (`Deployed: https://…`). Use essa URL em **Google OAuth → Authorized JavaScript origins**.
+
+### Manual (local)
+
 Script: [`scripts/deploy-cloudrun.ps1`](scripts/deploy-cloudrun.ps1) (lê o `.env` local, não imprime secrets).
 
 ```powershell
+$env:GCP_PROJECT_ID = "seu-projeto"
 .\scripts\deploy-cloudrun.ps1
 ```
 
-Serviço atual: `organizze-pluggy` em `southamerica-east1` (projeto `brazuca-rd`).
-
 Checklist:
 
-1. Secrets no `.env` (ou Secret Manager) — mesmas variáveis do [`.env.example`](.env.example).
+1. Secrets no `.env` — mesmas variáveis do [`.env.example`](.env.example).
 2. `NODE_ENV=production` (Cloud Run injeta `PORT=8080`).
 3. `prisma migrate deploy` roda no script antes do deploy.
-4. No Google OAuth, adicionar a URL pública em **Authorized JavaScript origins**:
-   - `https://organizze-pluggy-1059927927425.southamerica-east1.run.app`
+4. No Google OAuth, adicionar a URL pública do serviço em **Authorized JavaScript origins** (a URL aparece no fim do deploy).
 5. `GET /api/health` deve responder sem login.
 
 ---
