@@ -1167,24 +1167,41 @@
 .recon-hero {
   flex-direction: column;
   align-items: stretch;
-  gap: 0;
+  gap: 0.85rem;
   padding-bottom: 1.1rem;
 }
 
 .recon-hero-top {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 0.75rem 1rem;
 }
 
-.recon-hero-top h1 {
-  margin: 0;
+.recon-hero-copy {
   min-width: 0;
-  font-size: clamp(1.35rem, 2.2vw, 1.7rem);
+  flex: 1 1 16rem;
+}
+
+.recon-hero-copy h1 {
+  margin: 0 0 0.35rem;
+  font-size: clamp(1.45rem, 2.4vw, 1.9rem);
   font-weight: 800;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.04em;
   color: var(--oz-ink);
+}
+
+.recon-hero-copy h1 em {
+  font-style: normal;
+  color: var(--oz-green);
+}
+
+.recon-hero-copy p {
+  margin: 0;
+  max-width: 42rem;
+  color: var(--oz-muted);
+  font-size: 0.95rem;
 }
 
 .recon-hero-actions {
@@ -1192,7 +1209,64 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 0.1rem;
-  justify-self: end;
+  flex: 0 0 auto;
+}
+
+.recon-month {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.25rem 0.1rem;
+}
+
+.recon-month-arrow {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #868e96;
+  font-size: 1.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.recon-month-arrow:hover:not(:disabled) {
+  background: var(--oz-surface-2);
+  color: var(--oz-ink);
+}
+
+.recon-month-arrow:disabled,
+.recon-month-label:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.recon-month-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.75rem;
+  font: inherit;
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--oz-ink);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.recon-month-label:hover:not(:disabled) {
+  color: var(--oz-green);
 }
 
 .recon-sync-link {
@@ -2851,28 +2925,36 @@
   }
 
   .recon-hero-top {
-    grid-template-columns: 1fr auto;
-    grid-template-areas:
-      'title actions'
-      'month month';
-    gap: 0.55rem 0.65rem;
+    flex-direction: column;
+    align-items: stretch;
   }
 
-  .recon-hero-top h1 {
-    grid-area: title;
-    font-size: 1.3rem;
+  .recon-hero-copy h1 {
+    font-size: 1.35rem;
   }
 
-  .recon-hero-top .reports-month {
-    grid-area: month;
-    width: 100%;
-    justify-self: stretch;
-    justify-content: space-between;
+  .recon-hero-copy p {
+    font-size: 0.88rem;
   }
 
   .recon-hero-actions {
-    grid-area: actions;
     align-items: flex-end;
+    align-self: flex-end;
+  }
+
+  .recon-month {
+    width: 100%;
+  }
+
+  .recon-month-arrow {
+    width: 3rem;
+    height: 3rem;
+    font-size: 1.85rem;
+  }
+
+  .recon-month-label {
+    font-size: 1.4rem;
+    min-height: 3rem;
   }
 
   .recon-filters {
@@ -3481,7 +3563,7 @@
 }
 
 .reports-month-arrow:hover:not(:disabled) {
-  background: #f1f3f5;
+  background: var(--oz-surface-2);
   color: var(--oz-ink);
 }
 
@@ -3505,7 +3587,7 @@
 }
 
 .reports-month-label:hover:not(:disabled) {
-  background: #f1f3f5;
+  background: var(--oz-surface-2);
 }
 
 .reports-month-label:disabled {
@@ -3527,7 +3609,7 @@
 }
 
 .reports-refresh:hover:not(:disabled) {
-  background: #f1f3f5;
+  background: var(--oz-surface-2);
   color: var(--oz-ink);
 }
 
@@ -3622,7 +3704,7 @@
     width: 100%;
     justify-self: stretch;
     justify-content: space-between;
-    background: #f1f3f5;
+    background: var(--oz-surface-2);
     border-radius: 12px;
     padding: 0.15rem;
   }

@@ -128,7 +128,8 @@ export class AuthService {
   async createSession(email: string): Promise<string> {
     this.requireDb();
     const normalized = email.toLowerCase();
-    await this.revokeAllForEmail(normalized);
+    // Concurrent sessions are allowed (e.g. phone + desktop). Logout only
+    // revokes the current cookie via revokeSession.
 
     const token = generateSessionToken();
     const tokenHash = hashSessionToken(token);
@@ -220,12 +221,5 @@ export class AuthService {
     await this.prisma.authSession
       .deleteMany({ where: { tokenHash } })
       .catch(() => undefined);
-  }
-
-  async revokeAllForEmail(email: string): Promise<void> {
-    this.requireDb();
-    await this.prisma.authSession.deleteMany({
-      where: { email: email.toLowerCase() },
-    });
   }
 }

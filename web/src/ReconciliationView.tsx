@@ -1666,35 +1666,15 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       >
       <div className="hero-panel recon-hero">
         <div className="recon-hero-top">
-          <h1>Conciliação</h1>
-          <div className="reports-month" aria-label="Mês da conciliação">
-            <button
-              type="button"
-              className="reports-month-arrow"
-              disabled={toolbarBusy}
-              aria-label="Mês anterior"
-              onClick={() => changeYearMonth(shiftYearMonth(yearMonth, -1))}
-            >
-              ‹
-            </button>
-            <button
-              type="button"
-              className="reports-month-label"
-              disabled={toolbarBusy}
-              title="Ir para o mês atual"
-              onClick={() => changeYearMonth(currentYearMonth())}
-            >
-              {formatMonthTitle(yearMonth)}
-            </button>
-            <button
-              type="button"
-              className="reports-month-arrow"
-              disabled={toolbarBusy}
-              aria-label="Próximo mês"
-              onClick={() => changeYearMonth(shiftYearMonth(yearMonth, 1))}
-            >
-              ›
-            </button>
+          <div className="recon-hero-copy">
+            <h1>
+              Fila de <em>conciliação</em>
+            </h1>
+            <p>
+              Compare Open Finance com o Organizze. <strong>Vincular</strong>{' '}
+              marca um lançamento existente como pago;{' '}
+              <strong>Importar</strong> cria um novo.
+            </p>
           </div>
           <div className="recon-hero-actions">
             <button
@@ -1716,6 +1696,35 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               MeuPluggy
             </a>
           </div>
+        </div>
+        <div className="recon-month" aria-label="Mês da conciliação">
+          <button
+            type="button"
+            className="recon-month-arrow"
+            disabled={toolbarBusy}
+            aria-label="Mês anterior"
+            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, -1))}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="recon-month-label"
+            disabled={toolbarBusy}
+            title="Ir para o mês atual"
+            onClick={() => changeYearMonth(currentYearMonth())}
+          >
+            {formatMonthTitle(yearMonth)}
+          </button>
+          <button
+            type="button"
+            className="recon-month-arrow"
+            disabled={toolbarBusy}
+            aria-label="Próximo mês"
+            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, 1))}
+          >
+            ›
+          </button>
         </div>
       </div>
 
