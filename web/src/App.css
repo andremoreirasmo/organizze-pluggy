@@ -1167,21 +1167,23 @@
 .recon-hero {
   flex-direction: column;
   align-items: stretch;
+  justify-content: flex-start;
   gap: 0.85rem;
   padding-bottom: 1.1rem;
+  /* never inherit hero-panel space-between height stretch */
+  min-height: 0;
+  height: auto;
 }
 
 .recon-hero-top {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 0.75rem 1rem;
 }
 
 .recon-hero-copy {
   min-width: 0;
-  flex: 1 1 16rem;
 }
 
 .recon-hero-copy h1 {
@@ -1209,7 +1211,7 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 0.1rem;
-  flex: 0 0 auto;
+  justify-self: end;
 }
 
 .recon-month {
@@ -2924,9 +2926,16 @@
     font-size: 0.88rem;
   }
 
+  .recon-hero {
+    justify-content: flex-start;
+    gap: 0.7rem;
+    padding-bottom: 0.95rem;
+  }
+
   .recon-hero-top {
-    flex-direction: column;
-    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 0.5rem 0.65rem;
   }
 
   .recon-hero-copy h1 {
@@ -2939,22 +2948,24 @@
 
   .recon-hero-actions {
     align-items: flex-end;
-    align-self: flex-end;
+    padding-top: 0.1rem;
   }
 
   .recon-month {
     width: 100%;
+    margin: 0;
+    padding: 0.1rem 0 0;
   }
 
   .recon-month-arrow {
-    width: 3rem;
-    height: 3rem;
-    font-size: 1.85rem;
+    width: 2.75rem;
+    height: 2.75rem;
+    font-size: 1.65rem;
   }
 
   .recon-month-label {
-    font-size: 1.4rem;
-    min-height: 3rem;
+    font-size: 1.2rem;
+    min-height: 2.75rem;
   }
 
   .recon-filters {
