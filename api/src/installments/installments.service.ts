@@ -460,11 +460,21 @@ export class InstallmentsService {
       }
     }
 
+    // Chart months stay anchored to "today" so changing focus only highlights
+    // a bar — it does not slide the X axis.
+    const chartAnchor = currentMonthKeySaoPaulo();
+    const chartPurchases = stillOpen.filter((purchase) => {
+      if (purchase.ignored) {
+        return false;
+      }
+      const ends = purchase.endsMonthKey;
+      return typeof ends === 'string' && ends >= chartAnchor;
+    });
     const monthlyBars: InstallmentMonthBar[] = [];
     for (let i = 0; i < 6; i += 1) {
-      const key = shiftMonthKey(focus, i);
+      const key = shiftMonthKey(chartAnchor, i);
       let amountCents = 0;
-      for (const purchase of active) {
+      for (const purchase of chartPurchases) {
         for (const entry of purchase.schedule) {
           if (entry.monthKey === key) {
             amountCents += Math.abs(entry.amountCents);
