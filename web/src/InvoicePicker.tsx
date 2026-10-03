@@ -47,32 +47,16 @@ export function formatInvoiceMonthTitle(isoDate: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1)
 }
 
-/** Shift YYYY-MM-DD by `delta` calendar months (keeps day when possible). */
-function shiftIsoMonth(isoDate: string, delta: number): string {
-  const [year, month, day] = isoDate.split('-').map(Number)
-  if (!year || !month || !day) {
-    return isoDate
-  }
-  const utc = new Date(Date.UTC(year, month - 1 + delta, day))
-  const y = utc.getUTCFullYear()
-  const m = String(utc.getUTCMonth() + 1).padStart(2, '0')
-  const d = String(utc.getUTCDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
-
 /**
- * Organizze: `date` = vencimento; o ciclo começa em `starting_date`.
- * Ex.: 03/09→01/10, venc. 10/10 → fatura "Setembro", Venc. 10/10/2026.
- * Ex.: 02/10→01/11, venc. 10/11 → fatura "Outubro", Venc. 10/11/2026.
+ * Organizze names invoices by due month (`date` = vencimento).
+ * Ex.: fechamento 29/10, venc. 05/11 → "Novembro de 2026", Venc. 05/11/2026.
  */
 export function invoiceOptionLabel(invoice: InvoiceOption): {
   title: string
   subtitle: string | null
 } {
-  const titleDate =
-    invoice.starting_date ?? shiftIsoMonth(invoice.date, -1)
   return {
-    title: formatInvoiceMonthTitle(titleDate),
+    title: formatInvoiceMonthTitle(invoice.date),
     subtitle: `Venc. ${formatInvoiceDate(invoice.date)}`,
   }
 }

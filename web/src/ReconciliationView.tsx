@@ -1666,18 +1666,45 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       >
       <div className="hero-panel recon-hero">
         <div className="recon-hero-top">
-          <h1>
-            Fila de <em>conciliação</em>
-          </h1>
-          <div className="recon-toolbar-actions">
+          <h1>Conciliação</h1>
+          <div className="reports-month" aria-label="Mês da conciliação">
             <button
               type="button"
-              className="btn"
+              className="reports-month-arrow"
+              disabled={toolbarBusy}
+              aria-label="Mês anterior"
+              onClick={() => changeYearMonth(shiftYearMonth(yearMonth, -1))}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              className="reports-month-label"
+              disabled={toolbarBusy}
+              title="Ir para o mês atual"
+              onClick={() => changeYearMonth(currentYearMonth())}
+            >
+              {formatMonthTitle(yearMonth)}
+            </button>
+            <button
+              type="button"
+              className="reports-month-arrow"
+              disabled={toolbarBusy}
+              aria-label="Próximo mês"
+              onClick={() => changeYearMonth(shiftYearMonth(yearMonth, 1))}
+            >
+              ›
+            </button>
+          </div>
+          <div className="recon-hero-actions">
+            <button
+              type="button"
+              className="reports-refresh"
               disabled={toolbarBusy}
               title="Recarrega a fila com os dados já disponíveis"
               onClick={() => void loadQueue()}
             >
-              {loading ? 'Atualizando…' : 'Atualizar fila'}
+              {loading ? 'Atualizando…' : 'Atualizar'}
             </button>
             <a
               className="recon-sync-link"
@@ -1686,43 +1713,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               rel="noreferrer"
               title="Abre o MeuPluggy para atualizar as conexões"
             >
-              Abrir MeuPluggy
+              MeuPluggy
             </a>
           </div>
-        </div>
-        <p>
-          Compare Open Finance com o Organizze. <strong>Vincular</strong>{' '}
-          marca um lançamento existente como pago; <strong>Importar</strong>{' '}
-          cria um novo.
-        </p>
-        <div className="recon-month" aria-label="Mês da conciliação">
-          <button
-            type="button"
-            className="recon-month-arrow"
-            disabled={toolbarBusy}
-            aria-label="Mês anterior"
-            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, -1))}
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            className="recon-month-label"
-            disabled={toolbarBusy}
-            title="Ir para o mês atual"
-            onClick={() => changeYearMonth(currentYearMonth())}
-          >
-            {formatMonthTitle(yearMonth)}
-          </button>
-          <button
-            type="button"
-            className="recon-month-arrow"
-            disabled={toolbarBusy}
-            aria-label="Próximo mês"
-            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, 1))}
-          >
-            ›
-          </button>
         </div>
       </div>
 
