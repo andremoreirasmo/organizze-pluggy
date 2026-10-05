@@ -81,6 +81,8 @@ export type OrganizzeCreditCard = {
   closing_day: number | null;
   due_day: number | null;
   archived: boolean;
+  /** Conta bancária padrão para pagar a fatura deste cartão (Organizze). */
+  payment_account_id?: number | null;
 };
 
 export type OrganizzeInvoice = {

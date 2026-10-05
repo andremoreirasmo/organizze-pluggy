@@ -551,6 +551,17 @@ export class PluggyService {
     });
   }
 
+  async getTransaction(transactionId: string): Promise<Transaction | null> {
+    try {
+      return await this.client.fetchTransaction(transactionId);
+    } catch (error) {
+      this.logger.warn(
+        `Could not fetch Pluggy transaction ${transactionId}: ${String(error)}`,
+      );
+      return null;
+    }
+  }
+
   async listTransactionsForAccounts(params: {
     accountIds: string[];
     dateFrom?: string;

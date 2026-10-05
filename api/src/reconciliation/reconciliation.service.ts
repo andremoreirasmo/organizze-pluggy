@@ -289,24 +289,34 @@ export class ReconciliationService {
       this.loadOrganizzeAccountNames(),
       this.loadOrganizzeCreditCardNames(),
     ]);
+    // Capture Open Finance amounts before any Organizze write so the done
+    // card can show OF ≠ Organizze when the user linked with a different value
+    // (e.g. Buscar lançamento).
+    const pluggy = queueItem.pluggy;
+    const ofAmountCents = pluggy.amountCents;
+    const ofOrganizzeAmountCents = pluggy.organizzeAmountCents;
     await this.upsertDecision(
       pluggyTxId,
-      queueItem.pluggy.providerId,
+      pluggy.providerId,
       ReviewDecisionType.LINKED,
       undefined,
-      this.toDecisionSnapshot(queueItem.pluggy, {
-        organizzeTransactionId: updated.id,
-        organizzeDescription: updated.description,
-        organizzeAccountName: this.organizzeTxDestination(
-          updated,
-          accountNames,
-          cardNames,
-        ),
-        organizzeTargetType: this.organizzeTxTargetType(updated),
-        organizzeLinkedAmountCents: updated.amount_cents,
-        organizzeRecurring: updated.recurring,
-        wasPaidBeforeLink: existing.paid,
-      }),
+      {
+        ...this.toDecisionSnapshot(pluggy, {
+          organizzeTransactionId: updated.id,
+          organizzeDescription: updated.description,
+          organizzeAccountName: this.organizzeTxDestination(
+            updated,
+            accountNames,
+            cardNames,
+          ),
+          organizzeTargetType: this.organizzeTxTargetType(updated),
+          organizzeLinkedAmountCents: updated.amount_cents,
+          organizzeRecurring: updated.recurring,
+          wasPaidBeforeLink: existing.paid,
+        }),
+        amountCents: ofAmountCents,
+        organizzeAmountCents: ofOrganizzeAmountCents,
+      },
     );
     perf.mark('upsertDecision');
     perf.end(`ozTx=${body.organizzeTransactionId}`);
@@ -462,8 +472,18 @@ export class ReconciliationService {
     );
     const pluggy = queueItem.pluggy;
 
+    const cards = await this.organizze.listCreditCards({
+      includeArchived: true,
+    });
+    const card = cards.find((entry) => entry.id === body.creditCardId) ?? null;
+    const cardPaymentAccountId =
+      typeof card?.payment_account_id === 'number'
+        ? card.payment_account_id
+        : null;
+
     const accountId =
       body.accountId ??
+      cardPaymentAccountId ??
       (pluggy.mappedTargetType === 'account'
         ? pluggy.mappedOrganizzeTargetId
         : null);
@@ -475,10 +495,10 @@ export class ReconciliationService {
 
     const notes = this.organizze.appendPluggyMarker(null, pluggyTxId);
     const amountCents = pluggy.organizzeAmountCents;
-    const [accountNames, cardNames] = await Promise.all([
-      this.loadOrganizzeAccountNames(),
-      this.loadOrganizzeCreditCardNames(),
-    ]);
+    const accountNames = await this.loadOrganizzeAccountNames();
+    const cardNames = new Map(
+      cards.map((entry) => [entry.id, entry.name] as const),
+    );
 
     const created = await this.organizze.createInvoicePayment(
       body.creditCardId,
@@ -738,13 +758,20 @@ export class ReconciliationService {
     const activeMaps = appSettings.accountMaps.filter(isActiveAccountMap);
     const mappedAccountIds = activeMaps.map((map) => map.pluggyAccountId);
 
-    const [ozByPluggyId, accountNames, cardNames, pluggyById] =
+    const [ozByPluggyId, accountNames, cardNames, pluggyById, pluggyAccounts] =
       await Promise.all([
         this.indexOrganizzeTxByPluggyId(from, to),
         this.loadOrganizzeAccountNames(),
         this.loadOrganizzeCreditCardNames(),
         this.indexPluggyTxById(from, to, mappedAccountIds, activeMaps),
+        this.pluggy.listAccounts().catch(() => []),
       ]);
+    const mapsByPluggyId = new Map(
+      activeMaps.map((map) => [map.pluggyAccountId, map]),
+    );
+    const accountsById = new Map(
+      pluggyAccounts.map((account) => [account.id, account]),
+    );
 
     const items: DoneTransactionItem[] = [];
     for (const row of rows) {
@@ -757,7 +784,17 @@ export class ReconciliationService {
       }
       let snapshot = this.parseDecisionSnapshot(row.snapshot);
       const ozMatch = ozByPluggyId.get(row.pluggyTransactionId) ?? null;
-      const pluggyMatch = pluggyById.get(row.pluggyTransactionId) ?? null;
+      let pluggyMatch = pluggyById.get(row.pluggyTransactionId) ?? null;
+      if (!pluggyMatch) {
+        pluggyMatch = await this.resolvePluggyTxById(
+          row.pluggyTransactionId,
+          mapsByPluggyId,
+          accountsById,
+        );
+        if (pluggyMatch) {
+          pluggyById.set(row.pluggyTransactionId, pluggyMatch);
+        }
+      }
 
       if (!snapshot) {
         if (!ozMatch && !pluggyMatch) {
@@ -767,12 +804,9 @@ export class ReconciliationService {
           description:
             pluggyMatch?.description ??
             'Lançamento Open Finance',
-          amountCents:
-            pluggyMatch?.amountCents ?? ozMatch?.amount_cents ?? 0,
-          organizzeAmountCents:
-            pluggyMatch?.organizzeAmountCents ??
-            ozMatch?.amount_cents ??
-            0,
+          // Never fall back to Organizze amounts for the Open Finance side.
+          amountCents: pluggyMatch?.amountCents ?? 0,
+          organizzeAmountCents: pluggyMatch?.organizzeAmountCents ?? 0,
           date: (pluggyMatch?.date ?? ozMatch?.date ?? from).slice(0, 10),
           accountName: pluggyMatch
             ? this.formatAccountLabel(pluggyMatch)
@@ -836,9 +870,10 @@ export class ReconciliationService {
           organizzeTargetType:
             snapshot.organizzeTargetType ??
             (ozMatch ? this.organizzeTxTargetType(ozMatch) : null),
+          // Prefer live Organizze amount so the compare stays accurate after edits.
           organizzeLinkedAmountCents:
-            snapshot.organizzeLinkedAmountCents ??
             ozMatch?.amount_cents ??
+            snapshot.organizzeLinkedAmountCents ??
             null,
           organizzeRecurring:
             snapshot.organizzeRecurring ?? ozMatch?.recurring ?? null,
@@ -1289,6 +1324,37 @@ export class ReconciliationService {
       );
     }
     return byId;
+  }
+
+  /** Fallback when the month-range index misses a linked Pluggy tx. */
+  private async resolvePluggyTxById(
+    pluggyTxId: string,
+    mapsByPluggyId: Map<string, ActiveAccountMap>,
+    accountsById: Map<string, Account>,
+  ): Promise<QueuePluggyTransaction | null> {
+    const tx = await this.pluggy.getTransaction(pluggyTxId);
+    if (!tx) {
+      return null;
+    }
+    const account = accountsById.get(tx.accountId);
+    if (!account) {
+      return null;
+    }
+    const map = mapsByPluggyId.get(account.id) ?? {
+      pluggyAccountId: account.id,
+      targetType: 'account' as const,
+      organizzeTargetId: 0,
+      nickname: null,
+      cardNicknames: {},
+    };
+    const cardNumber = transactionCardNumber(tx, account);
+    return this.toQueueTransaction(
+      tx,
+      account,
+      map,
+      cardNumber,
+      resolveCardNickname(map, cardNumber),
+    );
   }
 
   private async loadOrganizzeAccountNames(): Promise<Map<number, string>> {

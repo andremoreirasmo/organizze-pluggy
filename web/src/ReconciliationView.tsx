@@ -150,6 +150,8 @@ export type OrganizzeCreditCard = {
   id: number
   name: string
   archived: boolean
+  /** Conta bancária padrão do cartão no Organizze para pagar fatura. */
+  payment_account_id?: number | null
 }
 
 export type OrganizzeAccount = {
@@ -640,9 +642,38 @@ function kindClass(kind: ReconciliationKind): string {
   return 'kind-bank'
 }
 
+function isInvoicePaymentItem(pluggy: QueuePluggyTransaction): boolean {
+  return pluggy.kind === 'invoice_payment_candidate'
+}
+
+function suggestInvoicePaymentAccountId(
+  cardId: string,
+  pluggy: QueuePluggyTransaction,
+  creditCards: OrganizzeCreditCard[],
+  accounts: OrganizzeAccount[],
+): string {
+  const active = accounts.filter((account) => !account.archived)
+  const activeIds = new Set(active.map((account) => account.id))
+  const card = creditCards.find((entry) => String(entry.id) === cardId)
+  const cardDefault =
+    typeof card?.payment_account_id === 'number'
+      ? card.payment_account_id
+      : null
+  if (cardDefault != null && activeIds.has(cardDefault)) {
+    return String(cardDefault)
+  }
+  if (
+    pluggy.mappedTargetType === 'account' &&
+    activeIds.has(pluggy.mappedOrganizzeTargetId)
+  ) {
+    return String(pluggy.mappedOrganizzeTargetId)
+  }
+  return active[0] ? String(active[0].id) : ''
+}
+
 /** Invoice payment only for detected candidates or bank outflows (never income). */
 function canOfferInvoicePayment(pluggy: QueuePluggyTransaction): boolean {
-  if (pluggy.kind === 'invoice_payment_candidate') {
+  if (isInvoicePaymentItem(pluggy)) {
     return true
   }
   return pluggy.kind === 'bank' && pluggy.organizzeAmountCents < 0
@@ -740,6 +771,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [importCategoryId, setImportCategoryId] = useState('')
   const [invoiceCardId, setInvoiceCardId] = useState('')
   const [invoiceId, setInvoiceId] = useState('')
+  const [invoicePaymentAccountId, setInvoicePaymentAccountId] = useState('')
   const [transferOtherAccountId, setTransferOtherAccountId] = useState('')
 
   const range = useMemo(() => monthBounds(yearMonth), [yearMonth])
@@ -884,8 +916,23 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     )
   }, [createItem, organizzeAccounts])
 
+  const invoicePaymentAccountOptions = useMemo(
+    () =>
+      organizzeAccounts
+        .filter((account) => !account.archived)
+        .map((account) => ({
+          value: String(account.id),
+          label: account.name,
+        })),
+    [organizzeAccounts],
+  )
+
   const createIsTransfer = Boolean(
     createItem && isSamePersonTransfer(createItem.pluggy),
+  )
+
+  const createIsInvoicePayment = Boolean(
+    createItem && isInvoicePaymentItem(createItem.pluggy),
   )
 
   const loadQueue = useCallback(
@@ -1162,7 +1209,83 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setLinkAmountInputs((prev) => ({ ...prev, [pluggyId]: value }))
   }
 
+  const openInvoicePaymentModal = (item: ReconciliationQueueItem) => {
+    setCreateItem(item)
+    setImportDescription(item.pluggy.description)
+    setImportAmount(formatSignedAmountInput(item.pluggy.organizzeAmountCents))
+    setImportCategoryId('')
+    setInvoiceCardId('')
+    setInvoiceId('')
+    setInvoicePaymentAccountId(
+      suggestInvoicePaymentAccountId(
+        '',
+        item.pluggy,
+        creditCards,
+        organizzeAccounts,
+      ),
+    )
+    setTransferOtherAccountId('')
+    onError(null)
+
+    const referenceDate = item.pluggy.date
+    const targetAmount = Math.abs(item.pluggy.organizzeAmountCents)
+    const pluggyId = item.pluggy.id
+
+    void (async () => {
+      let bestCardId: number | null = null
+      let bestInvoiceId: number | null = null
+
+      for (const card of creditCards) {
+        const invoices = await loadInvoices(card.id)
+        const byAmount = invoices.find(
+          (invoice) => Math.abs(invoice.balance_cents) === targetAmount,
+        )
+        if (byAmount) {
+          bestCardId = card.id
+          bestInvoiceId = byAmount.id
+          break
+        }
+      }
+
+      if (bestCardId == null && creditCards.length === 1) {
+        const card = creditCards[0]
+        const invoices = await loadInvoices(card.id)
+        const picked = pickCurrentInvoice(invoices, referenceDate)
+        bestCardId = card.id
+        bestInvoiceId = picked?.id ?? null
+      }
+
+      if (bestCardId == null) {
+        return
+      }
+
+      setCreateItem((current) => {
+        if (!current || current.pluggy.id !== pluggyId) {
+          return current
+        }
+        const cardId = String(bestCardId)
+        setInvoiceCardId(cardId)
+        if (bestInvoiceId != null) {
+          setInvoiceId(String(bestInvoiceId))
+        }
+        setInvoicePaymentAccountId(
+          suggestInvoicePaymentAccountId(
+            cardId,
+            current.pluggy,
+            creditCards,
+            organizzeAccounts,
+          ),
+        )
+        return current
+      })
+    })()
+  }
+
   const openCreateModal = (item: ReconciliationQueueItem) => {
+    if (isInvoicePaymentItem(item.pluggy)) {
+      openInvoicePaymentModal(item)
+      return
+    }
     setCreateItem(item)
     setImportDescription(
       isSamePersonTransfer(item.pluggy)
@@ -1177,6 +1300,14 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     setImportCategoryId('')
     setInvoiceCardId('')
     setInvoiceId('')
+    setInvoicePaymentAccountId(
+      suggestInvoicePaymentAccountId(
+        '',
+        item.pluggy,
+        creditCards,
+        organizzeAccounts,
+      ),
+    )
     setTransferOtherAccountId(
       item.pluggy.transferCounterpart
         ? String(item.pluggy.transferCounterpart.mappedOrganizzeTargetId)
@@ -1526,6 +1657,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       onError('Selecione cartão e fatura')
       return
     }
+    if (!invoicePaymentAccountId) {
+      onError('Selecione a conta que desconta o saldo')
+      return
+    }
     setAction({
       pluggyId: item.pluggy.id,
       kind: 'invoice',
@@ -1542,6 +1677,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           to: range.to,
           creditCardId: Number(invoiceCardId),
           invoiceId: Number(invoiceId),
+          accountId: Number(invoicePaymentAccountId),
         }),
       })
       await finishAction(
@@ -1938,10 +2074,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 ? action
                 : null
             const busy = cardAction !== null
+            const invoicePayment = isInvoicePaymentItem(item.pluggy)
             return (
               <li
                 key={item.pluggy.id}
-                className={`recon-card ${busy ? 'is-acting' : ''}`}
+                className={`recon-card ${busy ? 'is-acting' : ''}${invoicePayment ? ' is-invoice-payment' : ''}`}
               >
                 {cardAction ? (
                   <div className="recon-card-overlay" role="status">
@@ -1992,6 +2129,20 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   />
                 </div>
 
+                {invoicePayment ? (
+                  <div className="suggestions invoice-payment-hint">
+                    <div className="suggestions-head">
+                      <strong>Pagamento de fatura (conta bancária)</strong>
+                      <span>
+                        Saída no banco para quitar fatura de cartão — não é
+                        compra nem lançamento comum. Escolha o cartão e a fatura
+                        no Organizze para registrar o pagamento e conciliar com
+                        o Open Finance.
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+
                 {isSamePersonTransfer(item.pluggy) ? (
                   <div className="suggestions transfer-hint">
                     <div className="suggestions-head">
@@ -2005,7 +2156,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   </div>
                 ) : null}
 
-                {item.suggestions.length > 0 ? (
+                {!invoicePayment && item.suggestions.length > 0 ? (
                   <div className="suggestions">
                     <div className="suggestions-head is-row">
                       <strong>Sugestões no Organizze</strong>
@@ -2177,32 +2328,47 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       })}
                     </ul>
                   </div>
-                ) : !isSamePersonTransfer(item.pluggy) ? (
+                ) : !isSamePersonTransfer(item.pluggy) && !invoicePayment ? (
                   <p className="no-suggestions">
                     Sem sugestões próximas (valor/data fora da tolerância) —
                     use <strong>Buscar lançamento</strong>, Criar ou Ignorar.
                   </p>
                 ) : null}
 
-                <div className="recon-actions">
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    disabled={anyBusy}
-                    onClick={() => openSearchModal(item)}
-                  >
-                    Buscar lançamento
-                  </button>
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    disabled={anyBusy}
-                    onClick={() => openCreateModal(item)}
-                  >
-                    {isSamePersonTransfer(item.pluggy)
-                      ? 'Transferir entre contas'
-                      : 'Criar lançamento'}
-                  </button>
+                <div
+                  className={`recon-actions${invoicePayment ? ' is-invoice-payment' : ''}`}
+                >
+                  {invoicePayment ? (
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={anyBusy}
+                      onClick={() => openInvoicePaymentModal(item)}
+                    >
+                      Registrar pagamento de fatura
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        disabled={anyBusy}
+                        onClick={() => openSearchModal(item)}
+                      >
+                        Buscar lançamento
+                      </button>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        disabled={anyBusy}
+                        onClick={() => openCreateModal(item)}
+                      >
+                        {isSamePersonTransfer(item.pluggy)
+                          ? 'Transferir entre contas'
+                          : 'Criar lançamento'}
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
                     className="btn ghost"
@@ -2250,12 +2416,16 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
           title={
             createIsTransfer
               ? 'Transferência entre contas'
-              : 'Criar lançamento'
+              : createIsInvoicePayment
+                ? 'Pagamento de fatura'
+                : 'Criar lançamento'
           }
           subtitle={
             createIsTransfer
               ? 'Cria uma transferência no Organizze (saída + entrada) e grava o ID Pluggy nas observações.'
-              : 'Confira destino, valor e data antes de enviar ao Organizze.'
+              : createIsInvoicePayment
+                ? 'Marca a fatura do cartão como paga no Organizze e concilia com esta saída bancária do Open Finance.'
+                : 'Confira destino, valor e data antes de enviar ao Organizze.'
           }
         >
           {modalBusy ? (
@@ -2340,6 +2510,23 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       </div>
                     )}
                   </>
+                ) : createIsInvoicePayment ? (
+                  <>
+                    <div className="create-destination-row">
+                      <span>Conta bancária (Open Finance)</span>
+                      <strong>
+                        {formatPluggyAccountLabel(createItem.pluggy)}
+                      </strong>
+                    </div>
+                    <div className="create-destination-row">
+                      <span>Desconta no Organizze</span>
+                      <strong>
+                        {invoicePaymentAccountOptions.find(
+                          (option) => option.value === invoicePaymentAccountId,
+                        )?.label ?? 'Selecione a conta…'}
+                      </strong>
+                    </div>
+                  </>
                 ) : (
                   <>
                     <div className="create-destination-row">
@@ -2366,6 +2553,58 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 )}
               </div>
 
+              {createIsInvoicePayment ? (
+                <>
+                  <label>
+                    Cartão
+                    <CreditCardPicker
+                      cards={creditCards}
+                      value={invoiceCardId}
+                      disabled={modalBusy}
+                      onChange={(next) => {
+                        setInvoiceCardId(next)
+                        setInvoiceId('')
+                        if (next) {
+                          void loadInvoices(Number(next))
+                        }
+                        setInvoicePaymentAccountId(
+                          suggestInvoicePaymentAccountId(
+                            next,
+                            createItem.pluggy,
+                            creditCards,
+                            organizzeAccounts,
+                          ),
+                        )
+                      }}
+                    />
+                  </label>
+                  {invoiceCardId ? (
+                    <label>
+                      Fatura
+                      <InvoicePicker
+                        invoices={invoicesByCard[Number(invoiceCardId)] ?? []}
+                        value={invoiceId}
+                        disabled={modalBusy}
+                        emptyLabel="Escolher fatura…"
+                        onOpen={() => void loadInvoices(Number(invoiceCardId))}
+                        onChange={setInvoiceId}
+                      />
+                    </label>
+                  ) : null}
+                  <label>
+                    Conta que desconta o saldo
+                    <OptionPicker
+                      value={invoicePaymentAccountId}
+                      options={invoicePaymentAccountOptions}
+                      disabled={modalBusy}
+                      placeholder="Escolher conta…"
+                      searchable
+                      onChange={setInvoicePaymentAccountId}
+                    />
+                  </label>
+                </>
+              ) : (
+                <>
               <label>
                 Descrição
                 <input
@@ -2445,7 +2684,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     </label>
                   ) : null}
 
-                  {canOfferInvoicePayment(createItem.pluggy) ? (
+                  {canOfferInvoicePayment(createItem.pluggy) &&
+                  !createIsInvoicePayment ? (
                     <>
                       <label>
                         Cartão (pagamento de fatura)
@@ -2459,6 +2699,14 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                             if (next) {
                               void loadInvoices(Number(next))
                             }
+                            setInvoicePaymentAccountId(
+                              suggestInvoicePaymentAccountId(
+                                next,
+                                createItem.pluggy,
+                                creditCards,
+                                organizzeAccounts,
+                              ),
+                            )
                           }}
                         />
                       </label>
@@ -2479,8 +2727,23 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                           />
                         </label>
                       ) : null}
+                      {invoiceCardId ? (
+                        <label>
+                          Conta que desconta o saldo
+                          <OptionPicker
+                            value={invoicePaymentAccountId}
+                            options={invoicePaymentAccountOptions}
+                            disabled={modalBusy}
+                            placeholder="Escolher conta…"
+                            searchable
+                            onChange={setInvoicePaymentAccountId}
+                          />
+                        </label>
+                      ) : null}
                     </>
                   ) : null}
+                </>
+              )}
                 </>
               )}
 
@@ -2502,11 +2765,26 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   >
                     Registrar transferência
                   </button>
+                ) : createIsInvoicePayment ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={
+                      modalBusy ||
+                      !invoiceCardId ||
+                      !invoiceId ||
+                      !invoicePaymentAccountId
+                    }
+                    onClick={() => void payInvoice(createItem)}
+                  >
+                    Registrar pagamento de fatura
+                  </button>
                 ) : (
                   <>
                     {canOfferInvoicePayment(createItem.pluggy) &&
                     invoiceCardId &&
-                    invoiceId ? (
+                    invoiceId &&
+                    invoicePaymentAccountId ? (
                       <button
                         type="button"
                         className="btn"
@@ -3003,7 +3281,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 {doneItems.map((item) => {
                   const snap = item.snapshot
                   const busy = restoringId === item.pluggyTransactionId
-                  const ofAmountCents = snap?.organizzeAmountCents ?? null
+                  // Open Finance = valor Pluggy (mesmo do modal Buscar).
+                  // Organizze = valor efetivo do lançamento após o vínculo.
+                  const ofAmountCents =
+                    snap?.organizzeAmountCents ?? snap?.amountCents ?? null
                   const ozAmountCents =
                     snap?.organizzeLinkedAmountCents ?? null
                   const ozName = snap?.organizzeDescription?.trim() || null

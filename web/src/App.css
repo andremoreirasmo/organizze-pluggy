@@ -1472,6 +1472,30 @@
   gap: 0.85rem;
 }
 
+.recon-card.is-invoice-payment {
+  border-color: color-mix(in srgb, #c4885c 45%, var(--oz-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, #7a4020 10%, var(--oz-surface)) 0%,
+    var(--oz-surface) 55%
+  );
+}
+
+.invoice-payment-hint .suggestions-head span {
+  color: var(--oz-muted);
+  line-height: 1.45;
+}
+
+.recon-actions.is-invoice-payment {
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.recon-actions.is-invoice-payment .btn:not(.ghost) {
+  flex: 1 1 auto;
+  min-height: 2.75rem;
+}
+
 .recon-card-main {
   display: flex;
   gap: 1rem;

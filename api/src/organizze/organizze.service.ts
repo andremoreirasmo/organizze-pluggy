@@ -191,10 +191,28 @@ export class OrganizzeService {
     includeArchived?: boolean;
   }): Promise<OrganizzeCreditCard[]> {
     const cards = await this.request<OrganizzeCreditCard[]>('/credit_cards');
+    const normalized = cards.map((card) => this.normalizeCreditCard(card));
     if (options?.includeArchived) {
-      return cards;
+      return normalized;
     }
-    return cards.filter((card) => !card.archived);
+    return normalized.filter((card) => !card.archived);
+  }
+
+  private normalizeCreditCard(card: OrganizzeCreditCard): OrganizzeCreditCard {
+    const raw = card as OrganizzeCreditCard & {
+      payment_account_id?: number | null;
+      paymentAccountId?: number | null;
+    };
+    const paymentAccountId =
+      typeof raw.payment_account_id === 'number'
+        ? raw.payment_account_id
+        : typeof raw.paymentAccountId === 'number'
+          ? raw.paymentAccountId
+          : null;
+    return {
+      ...card,
+      payment_account_id: paymentAccountId,
+    };
   }
 
   listInvoices(creditCardId: number): Promise<OrganizzeInvoice[]> {
