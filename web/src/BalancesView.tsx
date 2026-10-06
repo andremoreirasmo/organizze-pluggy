@@ -730,7 +730,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
         <>
           {balanceTabs.length > 1 ? (
             <div
-              className="reports-tabs settings-tabs balance-account-tabs"
+              className="balance-tabs"
               role="tablist"
               aria-label="Contas e cartões"
             >
@@ -740,17 +740,16 @@ export function BalancesView({ apiFetch, onError }: Props) {
                   type="button"
                   role="tab"
                   aria-selected={activeTab?.id === tab.id}
-                  className={activeTab?.id === tab.id ? 'active' : ''}
+                  className={`balance-tab${activeTab?.id === tab.id ? ' is-active' : ''}${tab.warn ? ' is-warn' : ''}`}
                   onClick={() => setActiveTabId(tab.id)}
                 >
-                  <span className="balance-tab-label">{tab.label}</span>
+                  <span className="balance-tab-name">{tab.label}</span>
+                  <span className="balance-tab-kind">
+                    {tab.kind === 'account' ? 'Conta' : 'Cartão'}
+                  </span>
                   {tab.warn ? (
-                    <span className="settings-tab-count is-warn">!</span>
-                  ) : (
-                    <span className="settings-tab-count">
-                      {tab.kind === 'account' ? 'Conta' : 'Cartão'}
-                    </span>
-                  )}
+                    <span className="balance-tab-dot" aria-label="Divergente" />
+                  ) : null}
                 </button>
               ))}
             </div>

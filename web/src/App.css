@@ -3309,25 +3309,77 @@
   gap: 0.85rem;
 }
 
-.balance-account-tabs {
+.balance-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
   margin: 0 0 1rem;
-  padding: 0;
-  overflow-x: auto;
-  flex-wrap: nowrap;
-  gap: 1rem;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
 }
 
-.balance-account-tabs .balance-tab-label {
-  max-width: 10rem;
+.balance-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  max-width: 100%;
+  border: 1px solid var(--oz-border);
+  background: var(--oz-surface);
+  color: var(--oz-muted);
+  border-radius: 999px;
+  padding: 0.42rem 0.8rem 0.42rem 0.85rem;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 650;
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.balance-tab:hover {
+  color: var(--oz-ink);
+  border-color: color-mix(in srgb, var(--oz-green) 35%, var(--oz-border));
+}
+
+.balance-tab.is-active {
+  color: var(--oz-ink);
+  border-color: color-mix(in srgb, var(--oz-green) 55%, var(--oz-border));
+  background: color-mix(in srgb, var(--oz-green) 14%, var(--oz-surface));
+}
+
+.balance-tab-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 11rem;
 }
 
-.balance-account-tabs button {
+.balance-tab-kind {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--oz-muted);
+  opacity: 0.85;
+}
+
+.balance-tab.is-active .balance-tab-kind {
+  color: color-mix(in srgb, var(--oz-green) 70%, var(--oz-muted));
+}
+
+.balance-tab-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: #c47a4a;
   flex: 0 0 auto;
+  align-self: center;
+}
+
+.balance-tab.is-warn.is-active {
+  border-color: color-mix(in srgb, #c47a4a 45%, var(--oz-border));
 }
 
 .balance-card {
@@ -5099,6 +5151,18 @@ html[data-theme='dark'] .balance-card.is-ok {
 
 html[data-theme='dark'] .balance-card.is-diverged {
   border-color: color-mix(in srgb, var(--oz-danger) 45%, var(--oz-border));
+}
+
+html[data-theme='dark'] .balance-tab {
+  background: var(--oz-surface-2);
+}
+
+html[data-theme='dark'] .balance-tab.is-active {
+  background: color-mix(in srgb, var(--oz-green) 18%, var(--oz-surface));
+}
+
+html[data-theme='dark'] .balance-tab-dot {
+  background: #e0a070;
 }
 
 html[data-theme='dark'] .modal-close:hover:not(:disabled),
