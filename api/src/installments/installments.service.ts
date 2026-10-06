@@ -4,6 +4,7 @@ import type { OrganizzeTransaction } from '../organizze/organizze.types';
 import { SettingsService } from '../settings/settings.service';
 import type {
   InstallmentMonthBar,
+  InstallmentMonthDetail,
   InstallmentNextPayoff,
   InstallmentPurchase,
   InstallmentScheduleEntry,
@@ -376,6 +377,129 @@ function isoOnMonth(monthKey: string, day: number): string {
   return `${monthKey}-${pad2(Math.min(day, lastDay))}`;
 }
 
+function toPayoff(purchase: InstallmentPurchase): InstallmentNextPayoff {
+  const endsMonthKey = purchase.endsMonthKey as string;
+  const paymentMonthKey = invoicePaymentMonthKey(endsMonthKey);
+  const reliefMonthKey = shiftMonthKey(paymentMonthKey, 1);
+  return {
+    purchaseId: purchase.id,
+    description: purchase.description,
+    reliefCentsPerMonth: purchase.installmentAmountCents,
+    endsMonthKey,
+    paymentMonthKey,
+    reliefMonthKey,
+  };
+}
+
+/**
+ * Recompute schedule status / current installment relative to a focus month
+ * so each chart month can share the same purchase pool.
+ */
+function orientPurchaseToFocus(
+  purchase: InstallmentPurchase,
+  focusMonth: string,
+): InstallmentPurchase {
+  const schedule = purchase.schedule.map((entry) => {
+    if (entry.transactionId > 0) {
+      let status: InstallmentScheduleStatus = 'pendente';
+      if (entry.paid) {
+        status = 'paga';
+      } else if (entry.monthKey === focusMonth) {
+        status = 'nesta_fatura';
+      }
+      return { ...entry, status };
+    }
+
+    // Projected installment (no Organizze tx yet).
+    let status: InstallmentScheduleStatus = 'pendente';
+    let paid = false;
+    if (entry.monthKey < focusMonth) {
+      const laterPaid = purchase.schedule.some(
+        (other) =>
+          other.installment > entry.installment &&
+          (other.paid || other.transactionId > 0),
+      );
+      if (laterPaid) {
+        status = 'paga';
+        paid = true;
+      }
+    } else if (entry.monthKey === focusMonth) {
+      status = 'nesta_fatura';
+    }
+    return { ...entry, status, paid };
+  });
+
+  const paidCount = schedule.filter((entry) => entry.paid).length;
+  const remainingCount = Math.max(0, purchase.totalInstallments - paidCount);
+  const currentInstallment =
+    schedule.find((entry) => !entry.paid && entry.monthKey >= focusMonth)
+      ?.installment ??
+    schedule.find((entry) => !entry.paid)?.installment ??
+    Math.min(paidCount + 1, purchase.totalInstallments);
+
+  return {
+    ...purchase,
+    schedule,
+    paidCount,
+    remainingCents: remainingCount * purchase.installmentAmountCents,
+    currentInstallment,
+  };
+}
+
+function buildMonthDetail(
+  focus: string,
+  pool: InstallmentPurchase[],
+): InstallmentMonthDetail {
+  const oriented = pool.map((purchase) =>
+    orientPurchaseToFocus(purchase, focus),
+  );
+
+  const stillOpen = oriented.filter((purchase) => {
+    if (purchase.paidCount >= purchase.totalInstallments) {
+      return false;
+    }
+    const ends = purchase.endsMonthKey;
+    return typeof ends === 'string' && ends >= focus;
+  });
+
+  const purchases = stillOpen
+    .filter((purchase) => !purchase.ignored)
+    .sort((a, b) => b.installmentAmountCents - a.installmentAmountCents);
+
+  const ignoredPurchases = stillOpen
+    .filter((purchase) => purchase.ignored)
+    .sort((a, b) => b.installmentAmountCents - a.installmentAmountCents);
+
+  let committedThisMonthCents = 0;
+  for (const purchase of purchases) {
+    for (const entry of purchase.schedule) {
+      if (entry.monthKey === focus) {
+        committedThisMonthCents += Math.abs(entry.amountCents);
+      }
+    }
+  }
+
+  const payoffsThisMonth = purchases
+    .filter((purchase) => purchase.endsMonthKey === focus)
+    .map(toPayoff)
+    .sort((a, b) => b.reliefCentsPerMonth - a.reliefCentsPerMonth);
+
+  const focusPaymentMonth = invoicePaymentMonthKey(focus);
+
+  return {
+    monthKey: focus,
+    monthLabel: focusMonthLabelPt(focus),
+    focusPaymentMonth,
+    focusPaymentMonthLabel: focusMonthLabelPt(focusPaymentMonth),
+    committedThisMonthCents,
+    activePurchaseCount: purchases.length,
+    ignoredPurchaseCount: ignoredPurchases.length,
+    purchases,
+    ignoredPurchases,
+    payoffsThisMonth,
+  };
+}
+
 @Injectable()
 export class InstallmentsService {
   private readonly logger = new Logger(InstallmentsService.name);
@@ -386,10 +510,9 @@ export class InstallmentsService {
   ) {}
 
   async getOverview(focusMonth?: string): Promise<InstallmentsOverviewResponse> {
-    const focus =
-      focusMonth && /^\d{4}-\d{2}$/.test(focusMonth)
-        ? focusMonth
-        : currentMonthKeySaoPaulo();
+    const chartAnchor = currentMonthKeySaoPaulo();
+    const requested =
+      focusMonth && /^\d{4}-\d{2}$/.test(focusMonth) ? focusMonth : chartAnchor;
 
     const ignoredKeys = new Set(
       (await this.settings.getSettings()).ignoredInstallmentKeys,
@@ -402,9 +525,13 @@ export class InstallmentsService {
       cards.map((card) => [card.id, card.name] as const),
     );
 
-    const transactions = await this.loadInstallmentTransactions(focus, cards);
+    // Always load around the chart anchor so all 6 bars share one pool.
+    const transactions = await this.loadInstallmentTransactions(
+      chartAnchor,
+      cards,
+    );
     this.logger.log(
-      `Installments pool: ${transactions.length} txs (focus=${focus})`,
+      `Installments pool: ${transactions.length} txs (anchor=${chartAnchor})`,
     );
 
     const softGroups = new Map<string, OrganizzeTransaction[]>();
@@ -423,7 +550,7 @@ export class InstallmentsService {
           softKey,
           `${softKey}|c:${index}`,
           cluster,
-          focus,
+          chartAnchor,
           cardNameById,
           ignoredKeys.has(softKey),
         );
@@ -433,121 +560,40 @@ export class InstallmentsService {
       });
     }
 
-    const stillOpen = dedupePurchases(
+    const chartPool = dedupePurchases(
       purchases.filter((purchase) => {
         if (purchase.paidCount >= purchase.totalInstallments) {
           return false;
         }
         const ends = purchase.endsMonthKey;
-        return typeof ends === 'string' && ends >= focus;
+        return typeof ends === 'string' && ends >= chartAnchor;
       }),
     );
 
-    const active = stillOpen
-      .filter((purchase) => !purchase.ignored)
-      .sort((a, b) => b.installmentAmountCents - a.installmentAmountCents);
-
-    const ignoredPurchases = stillOpen
-      .filter((purchase) => purchase.ignored)
-      .sort((a, b) => b.installmentAmountCents - a.installmentAmountCents);
-
-    let committedThisMonthCents = 0;
-    for (const purchase of active) {
-      for (const entry of purchase.schedule) {
-        if (entry.monthKey === focus) {
-          committedThisMonthCents += Math.abs(entry.amountCents);
-        }
-      }
-    }
-
-    // Chart months stay anchored to "today" so changing focus only highlights
-    // a bar — it does not slide the X axis.
-    const chartAnchor = currentMonthKeySaoPaulo();
-    const chartPurchases = stillOpen.filter((purchase) => {
-      if (purchase.ignored) {
-        return false;
-      }
-      const ends = purchase.endsMonthKey;
-      return typeof ends === 'string' && ends >= chartAnchor;
-    });
     const monthlyBars: InstallmentMonthBar[] = [];
+    const months: Record<string, InstallmentMonthDetail> = {};
     for (let i = 0; i < 6; i += 1) {
       const key = shiftMonthKey(chartAnchor, i);
-      let amountCents = 0;
-      for (const purchase of chartPurchases) {
-        for (const entry of purchase.schedule) {
-          if (entry.monthKey === key) {
-            amountCents += Math.abs(entry.amountCents);
-          }
-        }
-      }
+      const detail = buildMonthDetail(key, chartPool);
+      months[key] = detail;
       monthlyBars.push({
         monthKey: key,
         label: monthLabelPt(key),
-        amountCents,
+        amountCents: detail.committedThisMonthCents,
       });
     }
 
-    const toPayoff = (
-      purchase: (typeof active)[number],
-    ): InstallmentNextPayoff => {
-      const endsMonthKey = purchase.endsMonthKey as string;
-      const paymentMonthKey = invoicePaymentMonthKey(endsMonthKey);
-      const reliefMonthKey = shiftMonthKey(paymentMonthKey, 1);
-      return {
-        purchaseId: purchase.id,
-        description: purchase.description,
-        reliefCentsPerMonth: purchase.installmentAmountCents,
-        endsMonthKey,
-        paymentMonthKey,
-        reliefMonthKey,
-      };
-    };
-
-    const payoffsThisMonth = active
-      .filter((purchase) => purchase.endsMonthKey === focus)
-      .map(toPayoff)
-      .sort((a, b) => b.reliefCentsPerMonth - a.reliefCentsPerMonth);
-
-    const focusPaymentMonth = invoicePaymentMonthKey(focus);
-
-    // Soonest quitação by payment month (fatura de set → paga em out).
-    // Includes purchases ending on the focused invoice, so we don't skip
-    // the October payment when viewing September.
-    const nextPayoff =
-      [...active]
-        .filter(
-          (purchase) =>
-            typeof purchase.endsMonthKey === 'string' &&
-            purchase.endsMonthKey >= focus,
-        )
-        .map(toPayoff)
-        .sort((a, b) => {
-          const byPay = a.paymentMonthKey.localeCompare(b.paymentMonthKey);
-          if (byPay !== 0) {
-            return byPay;
-          }
-          const byEnd = a.endsMonthKey.localeCompare(b.endsMonthKey);
-          if (byEnd !== 0) {
-            return byEnd;
-          }
-          return b.reliefCentsPerMonth - a.reliefCentsPerMonth;
-        })[0] ?? null;
+    const chartKeys = monthlyBars.map((bar) => bar.monthKey);
+    const selectedMonth = chartKeys.includes(requested)
+      ? requested
+      : chartAnchor;
 
     return {
       generatedAt: new Date().toISOString(),
-      focusMonth: focus,
-      focusMonthLabel: focusMonthLabelPt(focus),
-      focusPaymentMonth,
-      focusPaymentMonthLabel: focusMonthLabelPt(focusPaymentMonth),
-      committedThisMonthCents,
-      activePurchaseCount: active.length,
-      ignoredPurchaseCount: ignoredPurchases.length,
+      chartAnchorMonth: chartAnchor,
+      selectedMonth,
       monthlyBars,
-      nextPayoff,
-      payoffsThisMonth,
-      purchases: active,
-      ignoredPurchases,
+      months,
     };
   }
 

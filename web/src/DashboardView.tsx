@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import {
   InstallmentsPanel,
@@ -37,14 +37,6 @@ function currentMonthKeySaoPaulo(): string {
     .slice(0, 7)
 }
 
-function shiftMonthKey(monthKey: string, delta: number): string {
-  const [y, m] = monthKey.split('-').map(Number)
-  const absolute = y * 12 + (m - 1) + delta
-  const ny = Math.floor(absolute / 12)
-  const nm = (absolute % 12) + 1
-  return `${ny}-${String(nm).padStart(2, '0')}`
-}
-
 function formatMonthTitle(monthKey: string): string {
   const [y, m] = monthKey.split('-').map(Number)
   return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('pt-BR', {
@@ -66,7 +58,7 @@ export function DashboardView({ apiFetch, onError }: Props) {
       'installments',
   )
   const [loading, setLoading] = useState(false)
-  const [focusMonth, setFocusMonth] = useState(
+  const [selectedMonth, setSelectedMonth] = useState(
     () =>
       readMonthParam(new URLSearchParams(window.location.search)) ??
       currentMonthKeySaoPaulo(),
@@ -75,7 +67,12 @@ export function DashboardView({ apiFetch, onError }: Props) {
     useState<InstallmentsOverviewResponse | null>(null)
   const [investments, setInvestments] =
     useState<InvestmentsOverviewResponse | null>(null)
-  const failedMonthRef = useRef<string | null>(null)
+  const failedLoadRef = useRef(false)
+
+  const chartMonths = useMemo(
+    () => installments?.monthlyBars.map((bar) => bar.monthKey) ?? [],
+    [installments],
+  )
 
   const syncDashboardUrl = useCallback(
     (
@@ -85,7 +82,7 @@ export function DashboardView({ apiFetch, onError }: Props) {
       if (!isActive) {
         return
       }
-      const nextMonth = patch.month ?? focusMonth
+      const nextMonth = patch.month ?? selectedMonth
       const nextSection = patch.section ?? section
       setSearchParams(
         (current) =>
@@ -100,7 +97,7 @@ export function DashboardView({ apiFetch, onError }: Props) {
         { replace: mode === 'replace' },
       )
     },
-    [isActive, focusMonth, section, setSearchParams],
+    [isActive, selectedMonth, section, setSearchParams],
   )
 
   useEffect(() => {
@@ -117,37 +114,34 @@ export function DashboardView({ apiFetch, onError }: Props) {
     const nextSection = readSectionParam(searchParams) ?? 'installments'
     setSection(nextSection)
     const month = resolveYearMonth(searchParams, currentMonthKeySaoPaulo())
-    setFocusMonth((current) => {
-      if (current === month) {
-        return current
-      }
-      failedMonthRef.current = null
-      return month
-    })
+    setSelectedMonth((current) => (current === month ? current : month))
   }, [searchParams, isActive])
 
-  const loadInstallments = useCallback(
-    async (month: string) => {
-      setLoading(true)
-      onError(null)
-      try {
-        const data = await apiFetch<InstallmentsOverviewResponse>(
-          `/api/installments/overview?month=${encodeURIComponent(month)}`,
-        )
-        failedMonthRef.current = null
-        setInstallments(data)
-        setFocusMonth(data.focusMonth)
-      } catch (err) {
-        failedMonthRef.current = month
-        onError(
-          err instanceof Error ? err.message : 'Erro ao carregar parcelas',
-        )
-      } finally {
-        setLoading(false)
-      }
-    },
-    [apiFetch, onError],
-  )
+  const loadInstallments = useCallback(async () => {
+    setLoading(true)
+    onError(null)
+    try {
+      const data = await apiFetch<InstallmentsOverviewResponse>(
+        '/api/installments/overview',
+      )
+      failedLoadRef.current = false
+      setInstallments(data)
+      setSelectedMonth((current) => {
+        const chartKeys = data.monthlyBars.map((bar) => bar.monthKey)
+        if (chartKeys.includes(current)) {
+          return current
+        }
+        return data.selectedMonth
+      })
+    } catch (err) {
+      failedLoadRef.current = true
+      onError(
+        err instanceof Error ? err.message : 'Erro ao carregar parcelas',
+      )
+    } finally {
+      setLoading(false)
+    }
+  }, [apiFetch, onError])
 
   const loadInvestments = useCallback(async () => {
     setLoading(true)
@@ -166,18 +160,15 @@ export function DashboardView({ apiFetch, onError }: Props) {
     }
   }, [apiFetch, onError])
 
-  const changeFocusMonth = useCallback(
+  const changeSelectedMonth = useCallback(
     (month: string) => {
-      setFocusMonth((current) => {
-        if (current === month) {
-          return current
-        }
-        failedMonthRef.current = null
-        return month
-      })
+      if (chartMonths.length > 0 && !chartMonths.includes(month)) {
+        return
+      }
+      setSelectedMonth((current) => (current === month ? current : month))
       syncDashboardUrl({ month }, 'push')
     },
-    [syncDashboardUrl],
+    [chartMonths, syncDashboardUrl],
   )
 
   const changeSection = useCallback(
@@ -188,6 +179,15 @@ export function DashboardView({ apiFetch, onError }: Props) {
     [syncDashboardUrl],
   )
 
+  const refresh = useCallback(async () => {
+    if (section === 'installments') {
+      failedLoadRef.current = false
+      await loadInstallments()
+      return
+    }
+    await loadInvestments()
+  }, [section, loadInstallments, loadInvestments])
+
   const ignorePurchase = useCallback(
     async (ignoreKey: string) => {
       onError(null)
@@ -197,15 +197,15 @@ export function DashboardView({ apiFetch, onError }: Props) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ key: ignoreKey }),
         })
-        failedMonthRef.current = null
-        setInstallments(null)
+        failedLoadRef.current = false
+        await loadInstallments()
       } catch (err) {
         onError(
           err instanceof Error ? err.message : 'Erro ao ignorar parcela',
         )
       }
     },
-    [apiFetch, onError],
+    [apiFetch, onError, loadInstallments],
   )
 
   const unignorePurchase = useCallback(
@@ -216,15 +216,15 @@ export function DashboardView({ apiFetch, onError }: Props) {
           `/api/installments/ignore?key=${encodeURIComponent(ignoreKey)}`,
           { method: 'DELETE' },
         )
-        failedMonthRef.current = null
-        setInstallments(null)
+        failedLoadRef.current = false
+        await loadInstallments()
       } catch (err) {
         onError(
           err instanceof Error ? err.message : 'Erro ao restaurar parcela',
         )
       }
     },
-    [apiFetch, onError],
+    [apiFetch, onError, loadInstallments],
   )
 
   useEffect(() => {
@@ -234,19 +234,12 @@ export function DashboardView({ apiFetch, onError }: Props) {
       }
       return
     }
-    if (loading) {
+    if (loading || installments || failedLoadRef.current) {
       return
     }
-    if (installments?.focusMonth === focusMonth) {
-      return
-    }
-    if (failedMonthRef.current === focusMonth) {
-      return
-    }
-    void loadInstallments(focusMonth)
+    void loadInstallments()
   }, [
     section,
-    focusMonth,
     installments,
     investments,
     loading,
@@ -254,16 +247,24 @@ export function DashboardView({ apiFetch, onError }: Props) {
     loadInvestments,
   ])
 
-  const monthTitle = formatMonthTitle(focusMonth)
-
-  const refresh = useCallback(async () => {
-    if (section === 'installments') {
-      failedMonthRef.current = null
-      await loadInstallments(focusMonth)
+  // Keep URL month inside the chart window once data is loaded.
+  useEffect(() => {
+    if (!installments || chartMonths.length === 0) {
       return
     }
-    await loadInvestments()
-  }, [section, focusMonth, loadInstallments, loadInvestments])
+    if (chartMonths.includes(selectedMonth)) {
+      return
+    }
+    const next = installments.selectedMonth
+    setSelectedMonth(next)
+    syncDashboardUrl({ month: next }, 'replace')
+  }, [installments, chartMonths, selectedMonth, syncDashboardUrl])
+
+  const monthTitle = formatMonthTitle(selectedMonth)
+  const selectedIndex = chartMonths.indexOf(selectedMonth)
+  const canGoPrev = selectedIndex > 0
+  const canGoNext =
+    selectedIndex >= 0 && selectedIndex < chartMonths.length - 1
 
   return (
     <section className="dashboard reports">
@@ -276,31 +277,42 @@ export function DashboardView({ apiFetch, onError }: Props) {
                 <button
                   type="button"
                   className="reports-month-arrow"
-                  disabled={loading}
+                  disabled={loading || !canGoPrev}
                   aria-label="Mês anterior"
-                  onClick={() =>
-                    changeFocusMonth(shiftMonthKey(focusMonth, -1))
-                  }
+                  onClick={() => {
+                    if (!canGoPrev) {
+                      return
+                    }
+                    changeSelectedMonth(chartMonths[selectedIndex - 1])
+                  }}
                 >
                   ‹
                 </button>
                 <button
                   type="button"
                   className="reports-month-label"
-                  disabled={loading}
+                  disabled={loading || chartMonths.length === 0}
                   title="Ir para o mês atual"
-                  onClick={() => changeFocusMonth(currentMonthKeySaoPaulo())}
+                  onClick={() => {
+                    const today = currentMonthKeySaoPaulo()
+                    if (chartMonths.includes(today)) {
+                      changeSelectedMonth(today)
+                    }
+                  }}
                 >
                   {monthTitle}
                 </button>
                 <button
                   type="button"
                   className="reports-month-arrow"
-                  disabled={loading}
+                  disabled={loading || !canGoNext}
                   aria-label="Próximo mês"
-                  onClick={() =>
-                    changeFocusMonth(shiftMonthKey(focusMonth, 1))
-                  }
+                  onClick={() => {
+                    if (!canGoNext) {
+                      return
+                    }
+                    changeSelectedMonth(chartMonths[selectedIndex + 1])
+                  }}
                 >
                   ›
                 </button>
@@ -351,8 +363,9 @@ export function DashboardView({ apiFetch, onError }: Props) {
             {section === 'installments' && installments ? (
               <InstallmentsPanel
                 data={installments}
+                selectedMonth={selectedMonth}
                 loading={loading}
-                onFocusMonthChange={changeFocusMonth}
+                onSelectMonth={changeSelectedMonth}
                 onIgnorePurchase={ignorePurchase}
                 onUnignorePurchase={unignorePurchase}
               />

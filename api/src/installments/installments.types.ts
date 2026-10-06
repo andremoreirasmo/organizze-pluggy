@@ -51,21 +51,27 @@ export type InstallmentNextPayoff = {
   reliefMonthKey: string;
 };
 
-export type InstallmentsOverviewResponse = {
-  generatedAt: string;
-  focusMonth: string;
-  focusMonthLabel: string;
-  /** Payment month for the focus invoice (fatura set → paga em out). */
+/** Per-month report slice for one bar on the chart. */
+export type InstallmentMonthDetail = {
+  monthKey: string;
+  monthLabel: string;
   focusPaymentMonth: string;
   focusPaymentMonthLabel: string;
   committedThisMonthCents: number;
   activePurchaseCount: number;
   ignoredPurchaseCount: number;
-  monthlyBars: InstallmentMonthBar[];
-  /** Soonest purchase by payment month. */
-  nextPayoff: InstallmentNextPayoff | null;
-  /** Purchases whose last invoice competence is the focus month. */
-  payoffsThisMonth: InstallmentNextPayoff[];
   purchases: InstallmentPurchase[];
   ignoredPurchases: InstallmentPurchase[];
+  payoffsThisMonth: InstallmentNextPayoff[];
+};
+
+export type InstallmentsOverviewResponse = {
+  generatedAt: string;
+  /** Chart X-axis anchor (always "today" in America/Sao_Paulo). */
+  chartAnchorMonth: string;
+  /** Suggested selection: query month if on the chart, else anchor. */
+  selectedMonth: string;
+  monthlyBars: InstallmentMonthBar[];
+  /** Detail for every month in `monthlyBars`, keyed by monthKey. */
+  months: Record<string, InstallmentMonthDetail>;
 };

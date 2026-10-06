@@ -44,44 +44,45 @@ export type InstallmentPurchase = {
   schedule: InstallmentScheduleEntry[]
 }
 
-export type InstallmentsOverviewResponse = {
-  generatedAt: string
-  focusMonth: string
-  focusMonthLabel: string
+export type InstallmentNextPayoff = {
+  purchaseId: string
+  description: string
+  reliefCentsPerMonth: number
+  endsMonthKey: string
+  paymentMonthKey: string
+  reliefMonthKey: string
+}
+
+export type InstallmentMonthDetail = {
+  monthKey: string
+  monthLabel: string
   focusPaymentMonth: string
   focusPaymentMonthLabel: string
   committedThisMonthCents: number
   activePurchaseCount: number
   ignoredPurchaseCount: number
+  purchases: InstallmentPurchase[]
+  ignoredPurchases: InstallmentPurchase[]
+  payoffsThisMonth: InstallmentNextPayoff[]
+}
+
+export type InstallmentsOverviewResponse = {
+  generatedAt: string
+  chartAnchorMonth: string
+  selectedMonth: string
   monthlyBars: Array<{
     monthKey: string
     label: string
     amountCents: number
   }>
-  nextPayoff: {
-    purchaseId: string
-    description: string
-    reliefCentsPerMonth: number
-    endsMonthKey: string
-    paymentMonthKey: string
-    reliefMonthKey: string
-  } | null
-  payoffsThisMonth: Array<{
-    purchaseId: string
-    description: string
-    reliefCentsPerMonth: number
-    endsMonthKey: string
-    paymentMonthKey: string
-    reliefMonthKey: string
-  }>
-  purchases: InstallmentPurchase[]
-  ignoredPurchases: InstallmentPurchase[]
+  months: Record<string, InstallmentMonthDetail>
 }
 
 type Props = {
   data: InstallmentsOverviewResponse
+  selectedMonth: string
   loading?: boolean
-  onFocusMonthChange: (monthKey: string) => void
+  onSelectMonth: (monthKey: string) => void
   onIgnorePurchase: (ignoreKey: string) => Promise<void>
   onUnignorePurchase: (ignoreKey: string) => Promise<void>
 }
@@ -116,24 +117,6 @@ function formatMonthYearLong(monthKey: string): string {
     year: 'numeric',
     timeZone: 'UTC',
   })
-}
-
-function formatMonthLong(monthKey: string): string {
-  const [y, m] = monthKey.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('pt-BR', {
-    month: 'long',
-    timeZone: 'UTC',
-  })
-}
-
-function currentMonthKeySaoPaulo(): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-  })
-    .format(new Date())
-    .slice(0, 7)
 }
 
 function truncateLabel(value: string, max = 28): string {
@@ -203,8 +186,9 @@ function MonthBarTooltip({
 
 export function InstallmentsPanel({
   data,
+  selectedMonth,
   loading = false,
-  onFocusMonthChange,
+  onSelectMonth,
   onIgnorePurchase,
   onUnignorePurchase,
 }: Props) {
@@ -230,34 +214,38 @@ export function InstallmentsPanel({
   const [showIgnored, setShowIgnored] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
 
+  const month =
+    data.months[selectedMonth] ?? data.months[data.chartAnchorMonth] ?? null
+
   const barData = useMemo(
     () =>
       data.monthlyBars.map((bar) => ({
         ...bar,
         value: bar.amountCents / 100,
-        focus: bar.monthKey === data.focusMonth,
+        focus: bar.monthKey === selectedMonth,
       })),
-    [data.monthlyBars, data.focusMonth],
+    [data.monthlyBars, selectedMonth],
   )
 
   const purchases = useMemo(() => {
+    if (!month) {
+      return []
+    }
     const q = query.trim().toLowerCase()
     if (!q) {
-      return data.purchases
+      return month.purchases
     }
-    return data.purchases.filter((purchase) =>
+    return month.purchases.filter((purchase) =>
       purchase.description.toLowerCase().includes(q),
     )
-  }, [data.purchases, query])
+  }, [month, query])
 
-  const ignoredPurchases = data.ignoredPurchases ?? []
+  const ignoredPurchases = month?.ignoredPurchases ?? []
   const selected =
-    data.purchases.find((purchase) => purchase.id === selectedId) ??
+    month?.purchases.find((purchase) => purchase.id === selectedId) ??
     ignoredPurchases.find((purchase) => purchase.id === selectedId) ??
     null
-  const payoffsThisMonth = data.payoffsThisMonth ?? []
-  const showNextPayoff =
-    Boolean(data.nextPayoff) && data.focusMonth === currentMonthKeySaoPaulo()
+  const payoffsThisMonth = month?.payoffsThisMonth ?? []
 
   async function handleIgnore(ignoreKey: string) {
     setBusyKey(ignoreKey)
@@ -278,18 +266,26 @@ export function InstallmentsPanel({
     }
   }
 
+  if (!month) {
+    return (
+      <div className="dash-section">
+        <p className="dash-empty">Sem dados para este mês.</p>
+      </div>
+    )
+  }
+
   return (
     <div className={`dash-section${loading ? ' is-loading' : ''}`}>
       <section className="dash-card parc-summary">
-        <p className="parc-kicker">
-          Comprometido em {data.focusMonthLabel}
+        <p className="parc-kicker">Comprometido em {month.monthLabel}</p>
+        <p className="parc-total">
+          {formatBRL(month.committedThisMonthCents)}
         </p>
-        <p className="parc-total">{formatBRL(data.committedThisMonthCents)}</p>
         <p className="parc-sub">
-          {data.activePurchaseCount} compras parceladas ativas · soma das
-          parcelas que caem em {data.focusMonthLabel}
-          {(data.ignoredPurchaseCount ?? 0) > 0
-            ? ` · ${data.ignoredPurchaseCount} ignorada${data.ignoredPurchaseCount === 1 ? '' : 's'}`
+          {month.activePurchaseCount} compras parceladas ativas · soma das
+          parcelas que caem em {month.monthLabel}
+          {month.ignoredPurchaseCount > 0
+            ? ` · ${month.ignoredPurchaseCount} ignorada${month.ignoredPurchaseCount === 1 ? '' : 's'}`
             : ''}
         </p>
 
@@ -316,7 +312,7 @@ export function InstallmentsPanel({
                     key={entry.monthKey}
                     fill={entry.focus ? chartColors.focus : chartColors.idle}
                     cursor="pointer"
-                    onClick={() => onFocusMonthChange(entry.monthKey)}
+                    onClick={() => onSelectMonth(entry.monthKey)}
                   />
                 ))}
                 <LabelList
@@ -338,42 +334,10 @@ export function InstallmentsPanel({
           </ResponsiveContainer>
         </div>
 
-        {showNextPayoff && data.nextPayoff ? (
-          <div className="parc-payoff">
-            <div className="parc-payoff-icon" aria-hidden>
-              <span />
-            </div>
-            <div className="parc-payoff-body">
-              <span className="parc-payoff-label">
-                Próxima quitação ·{' '}
-                {formatMonthLong(data.nextPayoff.paymentMonthKey)}
-              </span>
-              <strong className="parc-payoff-relief">
-                −{formatBRL(data.nextPayoff.reliefCentsPerMonth)}
-                <span> /mês</span>
-              </strong>
-              <p className="parc-payoff-desc">
-                <button
-                  type="button"
-                  className="parc-payoff-link"
-                  onClick={() => setSelectedId(data.nextPayoff!.purchaseId)}
-                >
-                  {truncateLabel(data.nextPayoff.description)}
-                </button>
-                <span>
-                  {' '}
-                  · alívio a partir de{' '}
-                  {formatMonthLong(data.nextPayoff.reliefMonthKey)}
-                </span>
-              </p>
-            </div>
-          </div>
-        ) : null}
-
         {payoffsThisMonth.length > 0 ? (
           <div className="parc-quitting">
             <div className="parc-quitting-head">
-              <span>Quitando em {data.focusMonthLabel}</span>
+              <span>Quitando em {month.monthLabel}</span>
               <em>
                 −
                 {formatBRL(
@@ -446,7 +410,7 @@ export function InstallmentsPanel({
         </ul>
       )}
 
-      {(data.ignoredPurchaseCount ?? 0) > 0 ? (
+      {month.ignoredPurchaseCount > 0 ? (
         <div className="parc-ignored-block">
           <button
             type="button"
@@ -454,7 +418,7 @@ export function InstallmentsPanel({
             onClick={() => setShowIgnored((value) => !value)}
           >
             {showIgnored ? 'Ocultar' : 'Mostrar'} ignoradas (
-            {data.ignoredPurchaseCount})
+            {month.ignoredPurchaseCount})
           </button>
           {showIgnored ? (
             <ul className="parc-list parc-list-ignored">
