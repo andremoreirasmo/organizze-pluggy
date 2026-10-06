@@ -51,6 +51,14 @@ export type InvoiceBalanceRow = {
   pluggyBillDueDate: string | null;
   pluggyBillCloseDate: string | null;
   pluggyMinimumPaymentCents: number | null;
+  /** How many Pluggy bills were returned for this credit account. */
+  pluggyBillsFound: number;
+  /** Where the OF total came from, when matched. */
+  pluggyMatchOrigin: 'bill' | 'account_balance' | 'transactions_sum' | null;
+  /** Short reason when OF could not be matched (or empty cycle). */
+  pluggyMatchHint: string | null;
+  /** Closed vs open Organizze cycle for this row. */
+  invoiceCycle: 'closed' | 'open' | null;
   invoiceId: number | null;
   invoiceDueDate: string | null;
   invoiceStartingDate: string | null;
@@ -61,12 +69,22 @@ export type InvoiceBalanceRow = {
   organizzeBalanceCents: number | null;
   /** pluggyBillTotalCents − organizzeAmountCents */
   diffCents: number | null;
-  status: 'ok' | 'diverged' | 'no_invoice' | 'no_pluggy_bill';
+  /** How many Oz invoice txs were ignored (date > today) when excludeFutureOz. */
+  organizzeExcludedFutureCount: number;
+  status:
+    | 'ok'
+    | 'diverged'
+    | 'open_pending'
+    | 'empty'
+    | 'no_invoice'
+    | 'no_pluggy_bill';
 };
 
 export type BalanceSnapshotResponse = {
   generatedAt: string;
   toleranceCents: number;
+  /** Snapshot was computed excluding Oz txs with date after today. */
+  excludeFutureOz: boolean;
   investmentsFound: number;
   rows: BalanceSnapshotRow[];
   /** Investments that could not be auto-attached (no unique bank map for the item). */

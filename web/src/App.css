@@ -3309,6 +3309,27 @@
   gap: 0.85rem;
 }
 
+.balance-account-tabs {
+  margin: 0 0 1rem;
+  padding: 0;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  gap: 1rem;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.balance-account-tabs .balance-tab-label {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.balance-account-tabs button {
+  flex: 0 0 auto;
+}
+
 .balance-card {
   background: var(--oz-surface);
   border: 1px solid var(--oz-border);
@@ -3370,6 +3391,11 @@
   color: #8a3f1c;
 }
 
+.badge.balance-status.is-pending {
+  background: #fff4e0;
+  color: #9a6700;
+}
+
 .badge.balance-status.is-muted {
   width: auto;
   min-width: 6rem;
@@ -3410,6 +3436,133 @@
   gap: 0.35rem 0.85rem;
   color: var(--oz-muted);
   font-size: 0.78rem;
+}
+
+.balance-invoice-hint {
+  margin: 0.55rem 0 0;
+  color: var(--oz-muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.balance-invoice-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.balance-invoice-cycles {
+  list-style: none;
+  margin: 0.85rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.balance-invoice-cycle {
+  padding: 0.75rem 0 0;
+  border-top: 1px solid var(--oz-border, rgba(0, 0, 0, 0.08));
+}
+
+.balance-invoice-cycle:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.balance-invoice-cycle-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+}
+
+.balance-invoice-cycle-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.balance-invoice-chip {
+  appearance: none;
+  border: 1px solid var(--oz-border, rgba(0, 0, 0, 0.12));
+  background: transparent;
+  color: var(--oz-muted);
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.85rem;
+}
+
+.balance-invoice-chip:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.balance-invoice-chip.is-busy {
+  opacity: 1;
+}
+
+.balance-invoice-section .balance-list.is-busy {
+  pointer-events: none;
+  user-select: none;
+}
+
+.balance-invoice-chip.is-on {
+  border-color: color-mix(in srgb, #4c6ef5 45%, transparent);
+  background: rgba(76, 110, 245, 0.14);
+  color: #4c6ef5;
+}
+
+html[data-theme='dark'] .balance-invoice-chip {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+html[data-theme='dark'] .balance-invoice-chip.is-on {
+  border-color: color-mix(in srgb, #91a7ff 40%, transparent);
+  background: rgba(92, 124, 250, 0.2);
+  color: #91a7ff;
+}
+
+.badge.balance-cycle {
+  background: var(--oz-surface-2, #e9ecef);
+  color: var(--oz-muted);
+  font-weight: 600;
+}
+
+.badge.balance-cycle.is-open {
+  background: rgba(76, 110, 245, 0.14);
+  color: #4c6ef5;
+}
+
+.badge.balance-cycle.is-closed {
+  background: rgba(134, 142, 150, 0.16);
+  color: var(--oz-muted);
+}
+
+html[data-theme='dark'] .balance-invoice-cycle {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='dark'] .badge.balance-cycle.is-open {
+  background: rgba(92, 124, 250, 0.2);
+  color: #91a7ff;
+}
+
+html[data-theme='dark'] .badge.balance-cycle.is-closed {
+  background: rgba(173, 181, 189, 0.12);
+  color: #adb5bd;
 }
 
 .field-hint {
@@ -4928,6 +5081,11 @@ html[data-theme='dark'] .badge.balance-status.is-ok {
 html[data-theme='dark'] .badge.balance-status.is-diverged {
   background: color-mix(in srgb, #e8a87c 20%, var(--oz-surface-2));
   color: #f0c4a8;
+}
+
+html[data-theme='dark'] .badge.balance-status.is-pending {
+  background: color-mix(in srgb, #f0c674 18%, var(--oz-surface-2));
+  color: #f0d78c;
 }
 
 html[data-theme='dark'] .badge.balance-status.is-muted {

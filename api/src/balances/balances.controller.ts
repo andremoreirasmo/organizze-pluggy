@@ -1,4 +1,10 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+} from '@nestjs/common';
 import {
   IsInt,
   IsOptional,
@@ -62,13 +68,23 @@ class AdjustInvoiceDto {
   categoryId?: number | null;
 }
 
+function parseBooleanQuery(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
 @Controller('balances')
 export class BalancesController {
   constructor(private readonly balances: BalancesService) {}
 
   @Get('snapshot')
-  getSnapshot() {
-    return this.balances.getSnapshot();
+  getSnapshot(@Query('excludeFutureOz') excludeFutureOz?: string) {
+    return this.balances.getSnapshot({
+      excludeFutureOz: parseBooleanQuery(excludeFutureOz),
+    });
   }
 
   @Post('adjust')

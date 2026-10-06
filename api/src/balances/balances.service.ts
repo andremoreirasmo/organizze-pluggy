@@ -4,7 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import type { Account, CreditCardBills } from 'pluggy-sdk';
+import type { Account, CreditCardBills, Transaction } from 'pluggy-sdk';
 import { OrganizzeService } from '../organizze/organizze.service';
 import type { OrganizzeInvoice } from '../organizze/organizze.types';
 import {
@@ -20,6 +20,11 @@ import {
   parseReservedSourceId,
 } from '../settings/settings.types';
 import { startPerf } from '../common/perf';
+import {
+  estimateOpenInvoiceFromBalance,
+  keepThroughMonthForOpenInvoice,
+  sumRemainingInstallmentsAfterDue,
+} from './open-invoice-of';
 import {
   BALANCE_TOLERANCE_CENTS,
   BalanceSnapshotResponse,
@@ -65,6 +70,24 @@ function daysBetween(a: string, b: string): number {
   return Math.abs(left - right) / 86_400_000;
 }
 
+/** Signed calendar days from `fromIso` to `toIso` (positive when toIso is later). */
+function daysAfter(fromIso: string, toIso: string): number {
+  const left = Date.parse(`${fromIso}T12:00:00Z`);
+  const right = Date.parse(`${toIso}T12:00:00Z`);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return (right - left) / 86_400_000;
+}
+
+/** Prefer current cycle over old residual unpaid invoices (~2.5 months). */
+const RECENT_CLOSED_MAX_AGE_DAYS = 75;
+/** Ignore ancient unpaid leftovers when picking a compare invoice. */
+const UNPAID_LEGACY_MAX_AGE_DAYS = 90;
+const BILL_MATCH_MAX_DAYS = 18;
+/** Only when exactly one unpaid OF bill remains and tight window missed. */
+const BILL_MATCH_SINGLE_UNPAID_MAX_DAYS = 35;
+
 /** Prefer most recent closed unpaid bill; else latest closed; else nearest upcoming due. */
 function isPluggyBillFullyPaid(bill: CreditCardBills): boolean {
   const payments = bill.payments ?? [];
@@ -85,16 +108,76 @@ function invoiceIsUnpaid(invoice: OrganizzeInvoice): boolean {
   return invoice.payment_amount_cents === 0;
 }
 
+function billDateDistanceToTargets(
+  bill: CreditCardBills,
+  dueTarget: string,
+  closeTarget: string,
+): number {
+  const due = toIsoDate(bill.dueDate);
+  const close = toIsoDate(bill.billClosingDate);
+  if (!due) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const dueDist = daysBetween(due, dueTarget);
+  const closeDist = close
+    ? daysBetween(close, closeTarget)
+    : Number.POSITIVE_INFINITY;
+  return Math.min(
+    Number.isFinite(dueDist) ? dueDist : Number.POSITIVE_INFINITY,
+    Number.isFinite(closeDist) ? closeDist : Number.POSITIVE_INFINITY,
+  );
+}
+
+/** Shift YYYY-MM-DD by whole months (clamps day to month length). */
+function shiftIsoMonths(isoDate: string, delta: number): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  if (!year || !month || !day) {
+    return isoDate;
+  }
+  const absolute = year * 12 + (month - 1) + delta;
+  const nextYear = Math.floor(absolute / 12);
+  const nextMonth = (absolute % 12) + 1;
+  const lastDay = new Date(Date.UTC(nextYear, nextMonth, 0)).getUTCDate();
+  const nextDay = Math.min(day, lastDay);
+  return `${nextYear}-${String(nextMonth).padStart(2, '0')}-${String(nextDay).padStart(2, '0')}`;
+}
+
 /**
- * Invoice to reconcile: closed unpaid first (pay now), else latest closed
- * (even if paid — keeps MP/Nubank on the last statement). Never prefer the
- * open "next month" cycle over a closed one.
+ * Distance Oz↔OF. For closed invoices, also try Oz dates shifted −1 month
+ * (Mercado Pago–style cycle labels). Never lag-match open invoices — that
+ * falsely pairs them with the previous paid bill at “0d”.
  */
-function pickOrganizzeInvoiceForCompare(
+function billDateDistanceToInvoice(
+  bill: CreditCardBills,
+  invoice: OrganizzeInvoice,
+  options?: { allowMonthLag?: boolean },
+): number {
+  const direct = billDateDistanceToTargets(
+    bill,
+    invoice.date,
+    invoice.closing_date,
+  );
+  if (options?.allowMonthLag === false) {
+    return direct;
+  }
+  const lagged = billDateDistanceToTargets(
+    bill,
+    shiftIsoMonths(invoice.date, -1),
+    shiftIsoMonths(invoice.closing_date, -1),
+  );
+  return Math.min(direct, lagged);
+}
+
+/**
+ * Prefer the current closed cycle (even if paid), so an old residual unpaid
+ * invoice cannot hijack the compare. Also return the open cycle in progress
+ * when it differs — closed is for reconcile/pay; open is what is accumulating.
+ */
+function pickOrganizzeInvoicesForCompare(
   invoices: OrganizzeInvoice[],
-): OrganizzeInvoice | null {
+): Array<{ invoice: OrganizzeInvoice; cycle: 'closed' | 'open' }> {
   if (invoices.length === 0) {
-    return null;
+    return [];
   }
   const today = todayIsoSaoPaulo();
   const sortedByClose = [...invoices].sort((a, b) => {
@@ -105,19 +188,51 @@ function pickOrganizzeInvoiceForCompare(
     return b.date.localeCompare(a.date);
   });
 
-  const unpaidClosed = sortedByClose.filter(
-    (invoice) =>
-      invoiceIsUnpaid(invoice) && invoice.closing_date <= today,
-  );
-  if (unpaidClosed[0]) {
-    return unpaidClosed[0];
+  const recentClosed = sortedByClose.filter((invoice) => {
+    if (invoice.closing_date > today) {
+      return false;
+    }
+    return daysAfter(invoice.closing_date, today) <= RECENT_CLOSED_MAX_AGE_DAYS;
+  });
+
+  let closed: OrganizzeInvoice | null = recentClosed[0] ?? null;
+  if (!closed) {
+    const unpaidClosedFresh = sortedByClose.filter((invoice) => {
+      if (!invoiceIsUnpaid(invoice) || invoice.closing_date > today) {
+        return false;
+      }
+      return (
+        daysAfter(invoice.closing_date, today) <= UNPAID_LEGACY_MAX_AGE_DAYS
+      );
+    });
+    closed = unpaidClosedFresh[0] ?? null;
+  }
+  if (!closed) {
+    closed =
+      sortedByClose.find((invoice) => invoice.closing_date <= today) ?? null;
   }
 
-  const closed = sortedByClose.filter(
-    (invoice) => invoice.closing_date <= today,
-  );
-  if (closed[0]) {
-    return closed[0];
+  const open =
+    [...invoices]
+      .filter((invoice) => invoice.closing_date > today)
+      .sort((a, b) => {
+        const closeCmp = a.closing_date.localeCompare(b.closing_date);
+        if (closeCmp !== 0) {
+          return closeCmp;
+        }
+        return a.date.localeCompare(b.date);
+      })[0] ?? null;
+
+  const picked: Array<{ invoice: OrganizzeInvoice; cycle: 'closed' | 'open' }> =
+    [];
+  if (closed) {
+    picked.push({ invoice: closed, cycle: 'closed' });
+  }
+  if (open && open.id !== closed?.id) {
+    picked.push({ invoice: open, cycle: 'open' });
+  }
+  if (picked.length > 0) {
+    return picked;
   }
 
   const coveringUnpaid = sortedByClose.find(
@@ -127,65 +242,59 @@ function pickOrganizzeInvoiceForCompare(
       today <= invoice.closing_date,
   );
   if (coveringUnpaid) {
-    return coveringUnpaid;
+    return [{ invoice: coveringUnpaid, cycle: 'open' }];
   }
 
   const nextUnpaid = [...invoices]
     .filter((invoice) => invoiceIsUnpaid(invoice) && invoice.date >= today)
     .sort((a, b) => a.date.localeCompare(b.date));
-  return nextUnpaid[0] ?? sortedByClose[0] ?? null;
+  const fallback = nextUnpaid[0] ?? sortedByClose[0] ?? null;
+  if (!fallback) {
+    return [];
+  }
+  return [
+    {
+      invoice: fallback,
+      cycle: fallback.closing_date <= today ? 'closed' : 'open',
+    },
+  ];
 }
 
+type ScoredBill = {
+  bill: CreditCardBills;
+  dateDistance: number;
+};
+
 /**
- * Match a Pluggy bill to a fixed Organizze invoice by due/close dates only.
- * Window is tight (~18d) so adjacent monthly cycles do not pair (XP Sept vs Oct).
- * When Oz invoice is unpaid, only unpaid OF bills are eligible.
+ * Match a Pluggy bill to a fixed Organizze invoice by due/close dates
+ * (including −1 month lag). Window ~18d avoids pairing adjacent cycles.
+ * Fallbacks: single unpaid ≤35d; uniquely nearest bill ≤40d (MP-style offsets).
  */
-function pickPluggyBillForInvoice(
+function scorePluggyBillsForInvoice(
   bills: CreditCardBills[],
   invoice: OrganizzeInvoice,
-): CreditCardBills | null {
+  options?: { allowMonthLag?: boolean },
+): { match: CreditCardBills | null; nearestDistance: number } {
   if (bills.length === 0) {
-    return null;
+    return { match: null, nearestDistance: Number.POSITIVE_INFINITY };
   }
 
-  const maxDateDistance = 18;
   const requireUnpaid = invoiceIsUnpaid(invoice);
-
-  type Scored = {
-    bill: CreditCardBills;
-    dateDistance: number;
-  };
-  const scored: Scored[] = [];
+  const scored: ScoredBill[] = [];
+  let nearestDistance = Number.POSITIVE_INFINITY;
 
   for (const bill of bills) {
+    const dateDistance = billDateDistanceToInvoice(bill, invoice, options);
+    if (Number.isFinite(dateDistance) && dateDistance < nearestDistance) {
+      nearestDistance = dateDistance;
+    }
     if (requireUnpaid && isPluggyBillFullyPaid(bill)) {
       continue;
     }
-
-    const due = toIsoDate(bill.dueDate);
-    const close = toIsoDate(bill.billClosingDate);
-    if (!due) {
+    if (!Number.isFinite(dateDistance) || dateDistance > BILL_MATCH_MAX_DAYS) {
       continue;
     }
-
-    const dueDist = daysBetween(due, invoice.date);
-    const closeDist = close
-      ? daysBetween(close, invoice.closing_date)
-      : Number.POSITIVE_INFINITY;
-    const dateDistance = Math.min(
-      Number.isFinite(dueDist) ? dueDist : Number.POSITIVE_INFINITY,
-      Number.isFinite(closeDist) ? closeDist : Number.POSITIVE_INFINITY,
-    );
-    if (!Number.isFinite(dateDistance) || dateDistance > maxDateDistance) {
-      continue;
-    }
-
     scored.push({ bill, dateDistance });
-  }
-
-  if (scored.length === 0) {
-    return null;
   }
 
   scored.sort((a, b) => {
@@ -197,7 +306,40 @@ function pickPluggyBillForInvoice(
     return bClose.localeCompare(aClose);
   });
 
-  return scored[0]?.bill ?? null;
+  if (scored[0]) {
+    return { match: scored[0].bill, nearestDistance };
+  }
+
+  const candidates = bills
+    .filter((bill) => !(requireUnpaid && isPluggyBillFullyPaid(bill)))
+    .map((bill) => ({
+      bill,
+      dateDistance: billDateDistanceToInvoice(bill, invoice, options),
+    }))
+    .filter((entry) => Number.isFinite(entry.dateDistance))
+    .sort((a, b) => a.dateDistance - b.dateDistance);
+
+  if (
+    requireUnpaid &&
+    candidates.length === 1 &&
+    candidates[0].dateDistance <= BILL_MATCH_SINGLE_UNPAID_MAX_DAYS
+  ) {
+    return { match: candidates[0].bill, nearestDistance };
+  }
+
+  const UNIQUE_NEAR_MAX_DAYS = 40;
+  const UNIQUE_NEAR_GAP_DAYS = 14;
+  if (
+    candidates[0] &&
+    candidates[0].dateDistance <= UNIQUE_NEAR_MAX_DAYS &&
+    (candidates.length === 1 ||
+      candidates[1].dateDistance - candidates[0].dateDistance >=
+        UNIQUE_NEAR_GAP_DAYS)
+  ) {
+    return { match: candidates[0].bill, nearestDistance };
+  }
+
+  return { match: null, nearestDistance };
 }
 
 type PluggyInvoiceCompareSource = {
@@ -206,8 +348,419 @@ type PluggyInvoiceCompareSource = {
   dueDate: string | null;
   closeDate: string | null;
   minimumPaymentCents: number | null;
-  origin: 'bill' | 'account_balance';
+  origin: 'bill' | 'account_balance' | 'transactions_sum';
 };
+
+type PluggyInvoiceCompareResult = {
+  compare: PluggyInvoiceCompareSource | null;
+  billsFound: number;
+  matchOrigin: 'bill' | 'account_balance' | 'transactions_sum' | null;
+  matchHint: string | null;
+};
+
+function isPluggyBillPaymentTx(tx: Transaction): boolean {
+  const operation = (tx.operationType ?? '').toUpperCase();
+  if (
+    operation.includes('BILL_PAYMENT') ||
+    operation.includes('PAGAMENTO_FATURA')
+  ) {
+    return true;
+  }
+  const description = `${tx.description ?? ''} ${tx.category ?? ''}`;
+  return /pagamento\s+d[eo]\s+fatura|pagto\.?\s*fatura|pag\.?\s*fatura/i.test(
+    description,
+  );
+}
+
+const OPEN_BILL_DUE_MAX_DAYS = 18;
+/** How far back to scan OF txs for installments that hit the open invoice. */
+const OPEN_TX_INSTALLMENT_LOOKBACK_MONTHS = 24;
+
+/**
+ * Bill for the open Oz cycle. Match on **due date** near Oz due, or same
+ * closing month as Oz (in-progress OF bills). Never reuse a bill already used
+ * by the closed row. Never use Account.balance (total debt ≠ this invoice).
+ */
+function pickPluggyBillForOpenInvoice(
+  bills: CreditCardBills[],
+  invoice: OrganizzeInvoice,
+  excludeBillIds?: Set<string>,
+): CreditCardBills | null {
+  if (bills.length === 0) {
+    return null;
+  }
+
+  const competenceMonth = monthKeyFromIso(invoice.closing_date);
+  const dueMonth = monthKeyFromIso(invoice.date);
+
+  type Scored = {
+    bill: CreditCardBills;
+    dueDistance: number;
+    unpaid: boolean;
+  };
+  const scored: Scored[] = [];
+  for (const bill of bills) {
+    if (excludeBillIds?.has(bill.id)) {
+      continue;
+    }
+    const due = toIsoDate(bill.dueDate);
+    if (!due || due < invoice.starting_date) {
+      continue;
+    }
+    const close = toIsoDate(bill.billClosingDate);
+    const dueDistance = daysBetween(due, invoice.date);
+    const dueMonthMatch = monthKeyFromIso(due) === dueMonth;
+    const closeMonthMatch =
+      close !== null && monthKeyFromIso(close) === competenceMonth;
+    const dueNear =
+      Number.isFinite(dueDistance) && dueDistance <= OPEN_BILL_DUE_MAX_DAYS;
+
+    if (!dueNear && !dueMonthMatch && !closeMonthMatch) {
+      continue;
+    }
+
+    scored.push({
+      bill,
+      dueDistance: Number.isFinite(dueDistance)
+        ? dueDistance
+        : Number.POSITIVE_INFINITY,
+      unpaid: !isPluggyBillFullyPaid(bill),
+    });
+  }
+
+  scored.sort((a, b) => {
+    if (a.unpaid !== b.unpaid) {
+      return a.unpaid ? -1 : 1;
+    }
+    if (a.dueDistance !== b.dueDistance) {
+      return a.dueDistance - b.dueDistance;
+    }
+    return (toIsoDate(b.bill.billClosingDate) ?? '').localeCompare(
+      toIsoDate(a.bill.billClosingDate) ?? '',
+    );
+  });
+
+  return scored[0]?.bill ?? null;
+}
+
+/**
+ * Unpaid OF bills already closed (prior cycles). Their totals sit inside
+ * Account.balance together with the open statement.
+ */
+function sumUnpaidPriorBillCents(
+  bills: CreditCardBills[],
+  today: string,
+  excludeBillIds?: Set<string>,
+): { totalCents: number; billCount: number } {
+  let totalCents = 0;
+  let billCount = 0;
+  for (const bill of bills) {
+    if (excludeBillIds?.has(bill.id)) {
+      continue;
+    }
+    if (isPluggyBillFullyPaid(bill)) {
+      continue;
+    }
+    const close = toIsoDate(bill.billClosingDate);
+    if (!close || close > today) {
+      continue;
+    }
+    totalCents += Math.round(Math.abs(bill.totalAmount) * 100);
+    billCount += 1;
+  }
+  return { totalCents, billCount };
+}
+
+/**
+ * Installments already attributed to statements after this open invoice's due
+ * month (billForecastDate). Used to peel future debt off Account.balance.
+ */
+function sumFutureForecastBeyondOpenInvoice(
+  transactions: Transaction[],
+  invoice: OrganizzeInvoice,
+  excludeBillIds?: Set<string>,
+): { totalCents: number; chargeCount: number } {
+  const dueMonth = monthKeyFromIso(invoice.date);
+  let totalCents = 0;
+  let chargeCount = 0;
+  for (const tx of transactions) {
+    if (isPluggyBillPaymentTx(tx)) {
+      continue;
+    }
+    const amount = typeof tx.amount === 'number' ? tx.amount : 0;
+    if (!Number.isFinite(amount) || amount === 0) {
+      continue;
+    }
+    const billId = tx.creditCardMetadata?.billId?.trim();
+    if (billId && excludeBillIds?.has(billId)) {
+      continue;
+    }
+    const forecastRaw =
+      typeof tx.creditCardMetadata?.billForecastDate === 'string'
+        ? tx.creditCardMetadata.billForecastDate.trim()
+        : '';
+    const forecastMonth =
+      forecastRaw.length >= 7 ? forecastRaw.slice(0, 7) : null;
+    if (!forecastMonth || forecastMonth <= dueMonth) {
+      continue;
+    }
+    totalCents += Math.round(Math.abs(amount) * 100);
+    chargeCount += 1;
+  }
+  return { totalCents, chargeCount };
+}
+
+function summarizeDisaggregatedLimits(
+  account: Account,
+): string {
+  const limits = account.creditData?.disaggregatedCreditLimits ?? [];
+  if (limits.length === 0) {
+    return 'none';
+  }
+  return limits
+    .map((limit) => {
+      const used =
+        typeof limit.usedAmount === 'number'
+          ? Math.round(Math.abs(limit.usedAmount) * 100)
+          : null;
+      return `${limit.lineName ?? limit.creditLineLimitType ?? '?'}:${used ?? '-'}`;
+    })
+    .join(',');
+}
+
+function monthKeyFromIso(isoDate: string): string {
+  return isoDate.slice(0, 7);
+}
+
+const INSTALLMENT_SLASH_RE =
+  /(?:^|[\s\-–])(?:parc(?:ela)?\.?\s*)?(\d{1,2})\s*\/\s*(\d{1,2})(?:\s|$)/i;
+const INSTALLMENT_DE_RE = /(\d{1,2})\s*de\s*(\d{1,2})/i;
+
+function installmentFromDescription(
+  description: string,
+): { installment: number; totalInstallments: number } | null {
+  const slash = description.match(INSTALLMENT_SLASH_RE);
+  if (slash) {
+    const installment = Number(slash[1]);
+    const totalInstallments = Number(slash[2]);
+    if (
+      installment > 0 &&
+      totalInstallments > 1 &&
+      installment <= totalInstallments
+    ) {
+      return { installment, totalInstallments };
+    }
+  }
+  const de = description.match(INSTALLMENT_DE_RE);
+  if (de) {
+    const installment = Number(de[1]);
+    const totalInstallments = Number(de[2]);
+    if (
+      installment > 0 &&
+      totalInstallments > 1 &&
+      installment <= totalInstallments
+    ) {
+      return { installment, totalInstallments };
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether an OF credit transaction belongs on this Oz invoice cycle.
+ * Prefer billForecastDate / open billId / installment meta; also parse "3/10"
+ * from descriptions (XP often omits structured installment fields).
+ */
+function pluggyTxBelongsToInvoice(
+  tx: Transaction,
+  invoice: OrganizzeInvoice,
+  endDate: string,
+  excludeBillIds?: Set<string>,
+): boolean {
+  if (isPluggyBillPaymentTx(tx)) {
+    return false;
+  }
+  const amount = typeof tx.amount === 'number' ? tx.amount : 0;
+  if (!Number.isFinite(amount) || amount === 0) {
+    return false;
+  }
+
+  const txDate = toIsoDate(tx.date);
+  if (!txDate) {
+    return false;
+  }
+
+  const meta = tx.creditCardMetadata;
+  const billId =
+    typeof meta?.billId === 'string' && meta.billId.trim()
+      ? meta.billId.trim()
+      : null;
+  if (billId && excludeBillIds?.has(billId)) {
+    return false;
+  }
+
+  const competenceMonth = monthKeyFromIso(invoice.closing_date);
+  const dueMonth = monthKeyFromIso(invoice.date);
+
+  const forecastRaw =
+    typeof meta?.billForecastDate === 'string'
+      ? meta.billForecastDate.trim()
+      : '';
+  const forecastMonth = forecastRaw.length >= 7 ? forecastRaw.slice(0, 7) : null;
+  if (forecastMonth) {
+    // Strict: a tagged forecast locks the tx to that cycle only.
+    return forecastMonth === competenceMonth || forecastMonth === dueMonth;
+  }
+
+  // Open-statement txs often share a billId not present in the closed bills list.
+  if (billId) {
+    const fromDesc = installmentFromDescription(tx.description ?? '');
+    const hasInstallmentMeta =
+      typeof meta?.installmentNumber === 'number' &&
+      typeof meta?.totalInstallments === 'number' &&
+      meta.totalInstallments > 1;
+    if (
+      hasInstallmentMeta ||
+      fromDesc ||
+      (txDate >= invoice.starting_date && txDate <= endDate)
+    ) {
+      return true;
+    }
+  }
+
+  let installment =
+    typeof meta?.installmentNumber === 'number' && meta.installmentNumber > 0
+      ? meta.installmentNumber
+      : null;
+  let totalInstallments =
+    typeof meta?.totalInstallments === 'number' && meta.totalInstallments > 1
+      ? meta.totalInstallments
+      : null;
+  if (!installment || !totalInstallments) {
+    const fromDesc = installmentFromDescription(tx.description ?? '');
+    if (fromDesc) {
+      installment = fromDesc.installment;
+      totalInstallments = fromDesc.totalInstallments;
+    }
+  }
+
+  if (installment && totalInstallments) {
+    const purchaseIso =
+      toIsoDate(meta?.purchaseDate) ??
+      shiftIsoMonths(txDate, -(installment - 1));
+    const hitMonth = monthKeyFromIso(
+      shiftIsoMonths(purchaseIso, installment - 1),
+    );
+    if (hitMonth === competenceMonth || hitMonth === dueMonth) {
+      return true;
+    }
+    if (txDate >= invoice.starting_date && txDate <= endDate) {
+      return true;
+    }
+    return false;
+  }
+
+  if (
+    (tx.status ?? 'POSTED').toUpperCase() === 'PENDING' &&
+    txDate <= endDate
+  ) {
+    return true;
+  }
+
+  return txDate >= invoice.starting_date && txDate <= endDate;
+}
+
+function sumPluggyChargesForOpenInvoice(
+  transactions: Transaction[],
+  invoice: OrganizzeInvoice,
+  endDate: string,
+  excludeBillIds?: Set<string>,
+): {
+  totalCents: number;
+  chargeCount: number;
+  viaForecast: number;
+  viaBillId: number;
+  viaInstallment: number;
+  viaDateWindow: number;
+  openBillIdTotalCents: number;
+  openBillIdCount: number;
+} {
+  const byOpenBillId = new Map<
+    string,
+    { totalCents: number; chargeCount: number }
+  >();
+  for (const tx of transactions) {
+    if (isPluggyBillPaymentTx(tx)) {
+      continue;
+    }
+    const amount = typeof tx.amount === 'number' ? tx.amount : 0;
+    if (!Number.isFinite(amount) || amount === 0) {
+      continue;
+    }
+    const billId = tx.creditCardMetadata?.billId?.trim();
+    if (!billId || excludeBillIds?.has(billId)) {
+      continue;
+    }
+    const entry = byOpenBillId.get(billId) ?? {
+      totalCents: 0,
+      chargeCount: 0,
+    };
+    entry.totalCents += Math.round(Math.abs(amount) * 100);
+    entry.chargeCount += 1;
+    byOpenBillId.set(billId, entry);
+  }
+
+  let openBillIdTotalCents = 0;
+  let openBillIdCount = 0;
+  for (const entry of byOpenBillId.values()) {
+    if (entry.totalCents > openBillIdTotalCents) {
+      openBillIdTotalCents = entry.totalCents;
+      openBillIdCount = entry.chargeCount;
+    }
+  }
+
+  let totalCents = 0;
+  let chargeCount = 0;
+  let viaForecast = 0;
+  let viaBillId = 0;
+  let viaInstallment = 0;
+  let viaDateWindow = 0;
+  for (const tx of transactions) {
+    if (!pluggyTxBelongsToInvoice(tx, invoice, endDate, excludeBillIds)) {
+      continue;
+    }
+    const amount = typeof tx.amount === 'number' ? tx.amount : 0;
+    totalCents += Math.round(Math.abs(amount) * 100);
+    chargeCount += 1;
+
+    const meta = tx.creditCardMetadata;
+    if (meta?.billForecastDate) {
+      viaForecast += 1;
+    } else if (meta?.billId && !excludeBillIds?.has(meta.billId)) {
+      viaBillId += 1;
+    } else if (
+      (typeof meta?.installmentNumber === 'number' &&
+        typeof meta?.totalInstallments === 'number' &&
+        meta.totalInstallments > 1) ||
+      installmentFromDescription(tx.description ?? '')
+    ) {
+      viaInstallment += 1;
+    } else {
+      viaDateWindow += 1;
+    }
+  }
+
+  return {
+    totalCents,
+    chargeCount,
+    viaForecast,
+    viaBillId,
+    viaInstallment,
+    viaDateWindow,
+    openBillIdTotalCents,
+    openBillIdCount,
+  };
+}
 
 /**
  * When Bills API has no in-cycle unpaid statement, fall back to Account.balance
@@ -216,6 +769,7 @@ type PluggyInvoiceCompareSource = {
 function pickPluggyAccountBalanceForInvoice(
   account: Account,
   invoice: OrganizzeInvoice,
+  options?: { allowMonthLag?: boolean },
 ): PluggyInvoiceCompareSource | null {
   const credit = account.creditData;
   if (!credit) {
@@ -231,14 +785,25 @@ function pickPluggyAccountBalanceForInvoice(
     return null;
   }
 
+  const allowLag = options?.allowMonthLag !== false;
   const dueDist = dueDate
-    ? daysBetween(dueDate, invoice.date)
+    ? allowLag
+      ? Math.min(
+          daysBetween(dueDate, invoice.date),
+          daysBetween(dueDate, shiftIsoMonths(invoice.date, -1)),
+        )
+      : daysBetween(dueDate, invoice.date)
     : Number.POSITIVE_INFINITY;
   const closeDist = closeDate
-    ? daysBetween(closeDate, invoice.closing_date)
+    ? allowLag
+      ? Math.min(
+          daysBetween(closeDate, invoice.closing_date),
+          daysBetween(closeDate, shiftIsoMonths(invoice.closing_date, -1)),
+        )
+      : daysBetween(closeDate, invoice.closing_date)
     : Number.POSITIVE_INFINITY;
   const dateDistance = Math.min(dueDist, closeDist);
-  if (!Number.isFinite(dateDistance) || dateDistance > 18) {
+  if (!Number.isFinite(dateDistance) || dateDistance > BILL_MATCH_MAX_DAYS) {
     return null;
   }
 
@@ -256,19 +821,108 @@ function resolvePluggyInvoiceCompare(
   bills: CreditCardBills[],
   invoice: OrganizzeInvoice,
   account: Account,
-): PluggyInvoiceCompareSource | null {
-  const bill = pickPluggyBillForInvoice(bills, invoice);
-  if (bill) {
+  options?: { allowMonthLag?: boolean },
+): PluggyInvoiceCompareResult {
+  const { match, nearestDistance } = scorePluggyBillsForInvoice(
+    bills,
+    invoice,
+    options,
+  );
+  if (match) {
     return {
-      billId: bill.id,
-      totalCents: Math.round(Math.abs(bill.totalAmount) * 100),
-      dueDate: toIsoDate(bill.dueDate),
-      closeDate: toIsoDate(bill.billClosingDate),
-      minimumPaymentCents: reaisToCents(bill.minimumPaymentAmount),
-      origin: 'bill',
+      compare: {
+        billId: match.id,
+        totalCents: Math.round(Math.abs(match.totalAmount) * 100),
+        dueDate: toIsoDate(match.dueDate),
+        closeDate: toIsoDate(match.billClosingDate),
+        minimumPaymentCents: reaisToCents(match.minimumPaymentAmount),
+        origin: 'bill',
+      },
+      billsFound: bills.length,
+      matchOrigin: 'bill',
+      matchHint: null,
     };
   }
-  return pickPluggyAccountBalanceForInvoice(account, invoice);
+
+  const balanceFallback = pickPluggyAccountBalanceForInvoice(
+    account,
+    invoice,
+    options,
+  );
+  if (balanceFallback) {
+    return {
+      compare: balanceFallback,
+      billsFound: bills.length,
+      matchOrigin: 'account_balance',
+      matchHint: null,
+    };
+  }
+
+  let matchHint: string;
+  if (bills.length === 0) {
+    matchHint = 'Open Finance não retornou faturas (Bills)';
+  } else if (Number.isFinite(nearestDistance)) {
+    matchHint = `Nenhuma fatura OF a ≤${BILL_MATCH_MAX_DAYS}d (mais próxima: ${Math.round(nearestDistance)}d)`;
+  } else {
+    matchHint = 'Faturas OF sem data de vencimento utilizável';
+  }
+
+  return {
+    compare: null,
+    billsFound: bills.length,
+    matchOrigin: null,
+    matchHint,
+  };
+}
+
+/**
+ * When excludeFutureOz: sum invoice txs with date ≤ today (skip scheduled
+ * fixed charges that have not occurred yet). Falls back to amount_cents.
+ */
+async function resolveOrganizzeAmountCents(params: {
+  organizze: OrganizzeService;
+  creditCardId: number;
+  invoice: OrganizzeInvoice;
+  excludeFutureOz: boolean;
+  today: string;
+  logger: Logger;
+}): Promise<{ amountCents: number; excludedFutureCount: number }> {
+  const fullAmount = Math.abs(params.invoice.amount_cents);
+  if (!params.excludeFutureOz) {
+    return { amountCents: fullAmount, excludedFutureCount: 0 };
+  }
+
+  let detail = params.invoice;
+  if (!detail.transactions || detail.transactions.length === 0) {
+    try {
+      detail = await params.organizze.getInvoice(
+        params.creditCardId,
+        params.invoice.id,
+      );
+    } catch (error) {
+      params.logger.warn(
+        `getInvoice(${params.creditCardId},${params.invoice.id}) failed: ${String(error)}`,
+      );
+      return { amountCents: fullAmount, excludedFutureCount: 0 };
+    }
+  }
+
+  const txs = detail.transactions ?? [];
+  if (txs.length === 0) {
+    return { amountCents: fullAmount, excludedFutureCount: 0 };
+  }
+
+  let amountCents = 0;
+  let excludedFutureCount = 0;
+  for (const tx of txs) {
+    const date = tx.date.slice(0, 10);
+    if (date > params.today) {
+      excludedFutureCount += 1;
+      continue;
+    }
+    amountCents += Math.abs(tx.amount_cents);
+  }
+  return { amountCents, excludedFutureCount };
 }
 
 @Injectable()
@@ -281,7 +935,11 @@ export class BalancesService {
     private readonly settings: SettingsService,
   ) {}
 
-  async getSnapshot(): Promise<BalanceSnapshotResponse> {
+  async getSnapshot(options?: {
+    excludeFutureOz?: boolean;
+  }): Promise<BalanceSnapshotResponse> {
+    const excludeFutureOz = options?.excludeFutureOz === true;
+    const today = todayIsoSaoPaulo();
     const perf = startPerf('balances.snapshot');
     const appSettings = await this.settings.getSettings();
     perf.mark('settings');
@@ -527,24 +1185,20 @@ export class BalancesService {
         );
       }
 
-      // Organizze-first: pay-now closed unpaid invoice, then match OF bill / balance.
-      const invoice = pickOrganizzeInvoiceForCompare(invoices);
-      const pluggyCompare = invoice
-        ? resolvePluggyInvoiceCompare(bills, invoice, primary)
-        : null;
-      const pluggyBillDueDate = pluggyCompare?.dueDate ?? null;
-      const pluggyBillCloseDate = pluggyCompare?.closeDate ?? null;
-      const pluggyBillTotalCents = pluggyCompare?.totalCents ?? null;
-      const pluggyMinimumPaymentCents =
-        pluggyCompare?.minimumPaymentCents ?? null;
+      const picked = pickOrganizzeInvoicesForCompare(invoices);
+      const recentOz = [...invoices]
+        .sort((a, b) => b.closing_date.localeCompare(a.closing_date))
+        .slice(0, 3)
+        .map(
+          (entry) =>
+            `id=${entry.id} due=${entry.date} close=${entry.closing_date} amt=${entry.amount_cents} bal=${entry.balance_cents}`,
+        )
+        .join(' | ');
 
-      if (pluggyCompare || invoice) {
-        this.logger.debug(
-          `invoice-compare card=${organizzeCreditCardId} inv=${invoice?.id ?? 'none'} dueOz=${invoice?.date ?? null} closeOz=${invoice?.closing_date ?? null} amountOz=${invoice?.amount_cents ?? null} ofOrigin=${pluggyCompare?.origin ?? 'none'} bill=${pluggyCompare?.billId ?? 'none'} dueOF=${pluggyBillDueDate} closeOF=${pluggyBillCloseDate} totalOF=${pluggyBillTotalCents}`,
+      if (picked.length === 0) {
+        this.logger.log(
+          `invoice-compare card=${organizzeCreditCardId} picked=none bills=${bills.length} recent=[${recentOz}]`,
         );
-      }
-
-      if (!invoice) {
         invoiceRows.push({
           organizzeCreditCardId,
           organizzeCreditCardName: cardName,
@@ -555,6 +1209,10 @@ export class BalancesService {
           pluggyBillDueDate: null,
           pluggyBillCloseDate: null,
           pluggyMinimumPaymentCents: null,
+          pluggyBillsFound: bills.length,
+          pluggyMatchOrigin: null,
+          pluggyMatchHint: 'Sem fatura no Organizze',
+          invoiceCycle: null,
           invoiceId: null,
           invoiceDueDate: null,
           invoiceStartingDate: null,
@@ -563,66 +1221,350 @@ export class BalancesService {
           organizzePaymentCents: null,
           organizzeBalanceCents: null,
           diffCents: null,
+          organizzeExcludedFutureCount: 0,
           status: 'no_invoice',
         });
         continue;
       }
 
-      if (!pluggyCompare) {
+      const usedPluggyBillIds = new Set<string>();
+      let closedOfUnpaidCents = 0;
+
+      for (const { invoice, cycle } of picked) {
+        let resolved: PluggyInvoiceCompareResult;
+
+        if (cycle === 'open') {
+          // Never use bare Account.balance: with the closed bill paid it still
+          // includes installments that belong to later statements.
+          // Prefer: open bill → balance − unpaid closed − future forecasts → tx sum.
+          resolved = {
+            compare: null,
+            billsFound: bills.length,
+            matchOrigin: null,
+            matchHint: null,
+          };
+
+          const accountBalanceCents =
+            typeof primary.balance === 'number' &&
+            Number.isFinite(primary.balance)
+              ? Math.round(Math.abs(primary.balance) * 100)
+              : 0;
+          const unpaidPriorCents = Math.max(
+            sumUnpaidPriorBillCents(bills, today).totalCents,
+            closedOfUnpaidCents,
+          );
+
+          const openBill = pickPluggyBillForOpenInvoice(
+            bills,
+            invoice,
+            usedPluggyBillIds,
+          );
+          const openBillCents = openBill
+            ? Math.round(Math.abs(openBill.totalAmount) * 100)
+            : 0;
+
+          let txCents = 0;
+          let txChargeCount = 0;
+          let txHint: string | null = null;
+          let futureForecastCents = 0;
+          let futureForecastCount = 0;
+          let remainAfterCents = 0;
+          let balanceBackedOpenCents = 0;
+          // Fetch only through cycle close for belonging. Lookback covers
+          // installment purchases; do NOT fetch +18m (pulls other cycles).
+          const dateToBelong = invoice.closing_date;
+          const dateFrom = shiftIsoMonths(
+            invoice.starting_date,
+            -OPEN_TX_INSTALLMENT_LOOKBACK_MONTHS,
+          );
+          try {
+            const transactions = await this.pluggy.listTransactions({
+              accountId: primary.id,
+              dateFrom,
+              dateTo: dateToBelong,
+            });
+            const summed = sumPluggyChargesForOpenInvoice(
+              transactions,
+              invoice,
+              dateToBelong,
+              usedPluggyBillIds,
+            );
+            txCents = summed.totalCents;
+            txChargeCount = summed.chargeCount;
+            if (
+              accountBalanceCents > 0 &&
+              txCents > accountBalanceCents
+            ) {
+              txCents = accountBalanceCents;
+            }
+            if (txChargeCount > 0) {
+              txHint = `Soma de ${txChargeCount} lançamento${txChargeCount === 1 ? '' : 's'} OF do ciclo (compras + parcelas)`;
+            }
+
+            const future = sumFutureForecastBeyondOpenInvoice(
+              transactions,
+              invoice,
+              usedPluggyBillIds,
+            );
+            futureForecastCents = future.totalCents;
+            futureForecastCount = future.chargeCount;
+
+            // Keep through due+1 month: purchaseDate+(n−1) calendars run ~1
+            // month ahead of XP statement cycles. (Known-good ≈ R$ 3.887 on XP.)
+            const keepThroughMonth = keepThroughMonthForOpenInvoice(
+              invoice.date,
+            );
+            const remainingAfter = sumRemainingInstallmentsAfterDue(
+              transactions,
+              keepThroughMonth,
+            );
+            remainAfterCents = remainingAfter.totalCents;
+            const peelFutureCents = Math.max(
+              futureForecastCents,
+              remainAfterCents,
+            );
+            balanceBackedOpenCents = estimateOpenInvoiceFromBalance({
+              accountBalanceCents,
+              unpaidPriorCents,
+              remainingInstallmentCents: peelFutureCents,
+              minPeelCents: BALANCE_TOLERANCE_CENTS,
+            });
+
+            this.logger.log(
+              `open-tx-sum card=${organizzeCreditCardId} fetched=${transactions.length} sum=${txCents} count=${txChargeCount} forecast=${summed.viaForecast} billId=${summed.viaBillId} installment=${summed.viaInstallment} dateWin=${summed.viaDateWindow} bill=${openBillCents} futureFcst=${futureForecastCents}/${futureForecastCount} remainAfter=${remainAfterCents}/${remainingAfter.purchaseCount} peel=${peelFutureCents} balOpen=${balanceBackedOpenCents} unpaidPrior=${unpaidPriorCents} accBal=${accountBalanceCents} keepThrough=${keepThroughMonth} limits=${summarizeDisaggregatedLimits(primary)} range=${dateFrom}→${dateToBelong}`,
+            );
+          } catch (error) {
+            this.logger.warn(
+              `listTransactions(${primary.id}) for open invoice failed: ${String(error)}`,
+            );
+          }
+
+          // Trust only OF signals — never calibrate open OF against Oz.
+          const balanceBackedBeatsTx =
+            balanceBackedOpenCents >
+            Math.round(txCents * 1.1) + BALANCE_TOLERANCE_CENTS;
+          const balanceBackedBelowBalance =
+            accountBalanceCents <= 0 ||
+            balanceBackedOpenCents <
+              Math.round(accountBalanceCents * 0.95);
+          const trustBalanceBacked =
+            balanceBackedOpenCents > BALANCE_TOLERANCE_CENTS &&
+            balanceBackedBelowBalance &&
+            balanceBackedBeatsTx;
+
+          let pickOrigin: 'bill' | 'account_balance' | 'transactions_sum' | null =
+            null;
+          let pickTotal = 0;
+          let pickHint: string | null = null;
+          let pickBillId: string | null = null;
+          let pickDue: string | null = null;
+          let pickClose: string | null = null;
+          let pickMinPay: number | null = null;
+
+          if (trustBalanceBacked) {
+            pickOrigin = 'account_balance';
+            pickTotal = balanceBackedOpenCents;
+            pickHint =
+              'Saldo OF menos parcelas projetadas de ciclos futuros';
+            pickBillId = openBill?.id ?? null;
+            pickDue = openBill ? toIsoDate(openBill.dueDate) : null;
+            pickClose = openBill ? toIsoDate(openBill.billClosingDate) : null;
+            pickMinPay = openBill
+              ? reaisToCents(openBill.minimumPaymentAmount)
+              : reaisToCents(primary.creditData?.minimumPayment);
+          } else if (openBill && openBillCents > 0) {
+            if (
+              accountBalanceCents <= 0 ||
+              openBillCents <= accountBalanceCents
+            ) {
+              pickOrigin = 'bill';
+              pickTotal = openBillCents;
+              pickHint = 'Fatura OF do ciclo aberto';
+              pickBillId = openBill.id;
+              pickDue = toIsoDate(openBill.dueDate);
+              pickClose = toIsoDate(openBill.billClosingDate);
+              pickMinPay = reaisToCents(openBill.minimumPaymentAmount);
+            }
+          }
+          if (!pickOrigin && txCents > 0 && txChargeCount > 0) {
+            pickOrigin = 'transactions_sum';
+            pickTotal = txCents;
+            pickHint = txHint;
+          }
+
+          this.logger.log(
+            `open-of-pick card=${organizzeCreditCardId} origin=${pickOrigin ?? 'none'} total=${pickTotal} bill=${openBillCents} tx=${txCents} balOpen=${balanceBackedOpenCents} remainAfter=${remainAfterCents} unpaidPrior=${unpaidPriorCents} accBal=${accountBalanceCents} trustBal=${trustBalanceBacked}`,
+          );
+
+          if (pickOrigin && pickTotal > 0) {
+            resolved = {
+              compare: {
+                billId: pickBillId,
+                totalCents: pickTotal,
+                dueDate: pickDue,
+                closeDate: pickClose,
+                minimumPaymentCents: pickMinPay,
+                origin: pickOrigin,
+              },
+              billsFound: bills.length,
+              matchOrigin: pickOrigin,
+              matchHint: pickHint,
+            };
+          } else {
+            resolved = {
+              compare: null,
+              billsFound: bills.length,
+              matchOrigin: null,
+              matchHint: 'Sem fatura/lançamentos OF para o ciclo aberto',
+            };
+          }
+        } else {
+          resolved = resolvePluggyInvoiceCompare(bills, invoice, primary, {
+            allowMonthLag: true,
+          });
+        }
+
+        if (resolved.compare?.billId) {
+          usedPluggyBillIds.add(resolved.compare.billId);
+        }
+        if (
+          cycle === 'closed' &&
+          resolved.compare &&
+          invoiceIsUnpaid(invoice)
+        ) {
+          closedOfUnpaidCents = Math.max(
+            closedOfUnpaidCents,
+            resolved.compare.totalCents,
+          );
+        }
+
+        const { amountCents: organizzeAmountCents, excludedFutureCount } =
+          await resolveOrganizzeAmountCents({
+            organizze: this.organizze,
+            creditCardId: organizzeCreditCardId,
+            invoice,
+            excludeFutureOz,
+            today,
+            logger: this.logger,
+          });
+
+        const pluggyCompare = resolved.compare;
+        const pluggyBillDueDate = pluggyCompare?.dueDate ?? null;
+        const pluggyBillCloseDate = pluggyCompare?.closeDate ?? null;
+        const pluggyBillTotalCents = pluggyCompare?.totalCents ?? null;
+        const pluggyMinimumPaymentCents =
+          pluggyCompare?.minimumPaymentCents ?? null;
+
+        this.logger.log(
+          `invoice-compare card=${organizzeCreditCardId} cycle=${cycle} picked=${invoice.id} dueOz=${invoice.date} closeOz=${invoice.closing_date} amountOz=${organizzeAmountCents} fullOz=${invoice.amount_cents} exclFuture=${excludedFutureCount} balOz=${invoice.balance_cents} bills=${resolved.billsFound} ofOrigin=${resolved.matchOrigin ?? 'none'} bill=${pluggyCompare?.billId ?? 'none'} dueOF=${pluggyBillDueDate} totalOF=${pluggyBillTotalCents} hint=${resolved.matchHint ?? '-'} recent=[${recentOz}]`,
+        );
+
+        if (!pluggyCompare) {
+          invoiceRows.push({
+            organizzeCreditCardId,
+            organizzeCreditCardName: cardName,
+            pluggyAccountId: primary.id,
+            pluggyAccountName,
+            pluggyBillId: null,
+            pluggyBillTotalCents: null,
+            pluggyBillDueDate: null,
+            pluggyBillCloseDate: null,
+            pluggyMinimumPaymentCents: null,
+            pluggyBillsFound: resolved.billsFound,
+            pluggyMatchOrigin: null,
+            pluggyMatchHint: resolved.matchHint,
+            invoiceCycle: cycle,
+            invoiceId: invoice.id,
+            invoiceDueDate: invoice.date,
+            invoiceStartingDate: invoice.starting_date,
+            invoiceClosingDate: invoice.closing_date,
+            organizzeAmountCents,
+            organizzePaymentCents: invoice.payment_amount_cents,
+            organizzeBalanceCents: invoice.balance_cents,
+            diffCents: null,
+            organizzeExcludedFutureCount: excludedFutureCount,
+            status: 'no_pluggy_bill',
+          });
+          continue;
+        }
+
+        const diffCents = pluggyCompare.totalCents - organizzeAmountCents;
+        const bothEmpty =
+          pluggyCompare.totalCents === 0 && organizzeAmountCents === 0;
+        // Open invoice: Oz often includes scheduled fixed charges not in OF yet.
+        const openOzAhead =
+          !excludeFutureOz &&
+          cycle === 'open' &&
+          organizzeAmountCents > pluggyCompare.totalCents &&
+          Math.abs(diffCents) > BALANCE_TOLERANCE_CENTS;
+        const futureNote =
+          excludedFutureCount > 0
+            ? `Oz sem ${excludedFutureCount} lançamento${excludedFutureCount === 1 ? '' : 's'} futuro${excludedFutureCount === 1 ? '' : 's'}`
+            : null;
+        const matchHint = bothEmpty
+          ? 'Sem cobrança neste ciclo'
+          : openOzAhead
+            ? `${resolved.matchHint ? `${resolved.matchHint}. ` : ''}Oz pode incluir lançamentos fixos ainda não ocorridos no OF`
+            : [resolved.matchHint, futureNote]
+                .filter((part): part is string => Boolean(part))
+                .join(' · ') || null;
         invoiceRows.push({
           organizzeCreditCardId,
           organizzeCreditCardName: cardName,
           pluggyAccountId: primary.id,
           pluggyAccountName,
-          pluggyBillId: null,
-          pluggyBillTotalCents: null,
-          pluggyBillDueDate: null,
-          pluggyBillCloseDate: null,
-          pluggyMinimumPaymentCents: null,
+          pluggyBillId: pluggyCompare.billId,
+          pluggyBillTotalCents: pluggyCompare.totalCents,
+          pluggyBillDueDate,
+          pluggyBillCloseDate,
+          pluggyMinimumPaymentCents,
+          pluggyBillsFound: resolved.billsFound,
+          pluggyMatchOrigin: resolved.matchOrigin,
+          pluggyMatchHint: matchHint,
+          invoiceCycle: cycle,
           invoiceId: invoice.id,
           invoiceDueDate: invoice.date,
           invoiceStartingDate: invoice.starting_date,
           invoiceClosingDate: invoice.closing_date,
-          organizzeAmountCents: Math.abs(invoice.amount_cents),
+          organizzeAmountCents,
           organizzePaymentCents: invoice.payment_amount_cents,
           organizzeBalanceCents: invoice.balance_cents,
-          diffCents: null,
-          status: 'no_pluggy_bill',
+          diffCents,
+          organizzeExcludedFutureCount: excludedFutureCount,
+          status: bothEmpty
+            ? 'empty'
+            : Math.abs(diffCents) <= BALANCE_TOLERANCE_CENTS
+              ? 'ok'
+              : openOzAhead
+                ? 'open_pending'
+                : 'diverged',
         });
-        continue;
       }
-
-      const organizzeAmountCents = Math.abs(invoice.amount_cents);
-      const diffCents = pluggyCompare.totalCents - organizzeAmountCents;
-      invoiceRows.push({
-        organizzeCreditCardId,
-        organizzeCreditCardName: cardName,
-        pluggyAccountId: primary.id,
-        pluggyAccountName,
-        pluggyBillId: pluggyCompare.billId,
-        pluggyBillTotalCents: pluggyCompare.totalCents,
-        pluggyBillDueDate,
-        pluggyBillCloseDate,
-        pluggyMinimumPaymentCents,
-        invoiceId: invoice.id,
-        invoiceDueDate: invoice.date,
-        invoiceStartingDate: invoice.starting_date,
-        invoiceClosingDate: invoice.closing_date,
-        organizzeAmountCents,
-        organizzePaymentCents: invoice.payment_amount_cents,
-        organizzeBalanceCents: invoice.balance_cents,
-        diffCents,
-        status:
-          Math.abs(diffCents) <= BALANCE_TOLERANCE_CENTS ? 'ok' : 'diverged',
-      });
     }
 
-    invoiceRows.sort((a, b) =>
-      a.organizzeCreditCardName.localeCompare(
+    invoiceRows.sort((a, b) => {
+      const byCard = a.organizzeCreditCardName.localeCompare(
         b.organizzeCreditCardName,
         'pt-BR',
-      ),
-    );
+      );
+      if (byCard !== 0) {
+        return byCard;
+      }
+      const cycleRank = (cycle: 'closed' | 'open' | null): number => {
+        if (cycle === 'closed') {
+          return 0;
+        }
+        if (cycle === 'open') {
+          return 1;
+        }
+        return 2;
+      };
+      const byCycle = cycleRank(a.invoiceCycle) - cycleRank(b.invoiceCycle);
+      if (byCycle !== 0) {
+        return byCycle;
+      }
+      return (a.invoiceDueDate ?? '').localeCompare(b.invoiceDueDate ?? '');
+    });
 
     const unmappedCreditAccounts: UnmappedCreditAccount[] = accounts
       .filter((account) => (account.type ?? '').toUpperCase() === 'CREDIT')
@@ -643,6 +1585,7 @@ export class BalancesService {
     return {
       generatedAt: new Date().toISOString(),
       toleranceCents: BALANCE_TOLERANCE_CENTS,
+      excludeFutureOz,
       investmentsFound: investments.length,
       rows,
       unmappedInvestments,

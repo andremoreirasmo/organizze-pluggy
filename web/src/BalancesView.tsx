@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
 import {
@@ -40,6 +40,7 @@ export type UnmappedInvestment = {
 export type BalanceSnapshotResponse = {
   generatedAt: string
   toleranceCents: number
+  excludeFutureOz?: boolean
   investmentsFound: number
   rows: BalanceSnapshotRow[]
   unmappedInvestments: UnmappedInvestment[]
@@ -64,6 +65,10 @@ export type InvoiceBalanceRow = {
   pluggyBillDueDate: string | null
   pluggyBillCloseDate: string | null
   pluggyMinimumPaymentCents: number | null
+  pluggyBillsFound: number
+  pluggyMatchOrigin: 'bill' | 'account_balance' | 'transactions_sum' | null
+  pluggyMatchHint: string | null
+  invoiceCycle: 'closed' | 'open' | null
   invoiceId: number | null
   invoiceDueDate: string | null
   invoiceStartingDate: string | null
@@ -72,7 +77,8 @@ export type InvoiceBalanceRow = {
   organizzePaymentCents: number | null
   organizzeBalanceCents: number | null
   diffCents: number | null
-  status: 'ok' | 'diverged' | 'no_invoice' | 'no_pluggy_bill'
+  organizzeExcludedFutureCount?: number
+  status: 'ok' | 'diverged' | 'open_pending' | 'empty' | 'no_invoice' | 'no_pluggy_bill'
 }
 
 type BalanceMap = {
@@ -105,8 +111,82 @@ function formatBRL(amountCents: number): string {
   })
 }
 
+function invoiceStatusLabel(status: InvoiceBalanceRow['status']): string {
+  switch (status) {
+    case 'ok':
+      return 'OK'
+    case 'empty':
+      return 'Sem cobrança'
+    case 'open_pending':
+      return 'Em andamento'
+    case 'no_invoice':
+      return 'Sem fatura Oz'
+    case 'no_pluggy_bill':
+      return 'Sem fatura OF'
+    default:
+      return 'Divergente'
+  }
+}
+
+function invoiceStatusClass(status: InvoiceBalanceRow['status']): string {
+  if (status === 'ok') {
+    return 'is-ok'
+  }
+  if (status === 'diverged') {
+    return 'is-diverged'
+  }
+  if (status === 'open_pending') {
+    return 'is-pending'
+  }
+  return 'is-muted'
+}
+
+/**
+ * Label invoices by closing/competence month (not due month).
+ * Ex.: fecha 28/09, venc. 05/10 → "Setembro de 2026" (paga em outubro).
+ */
+function invoiceCycleTitle(row: InvoiceBalanceRow): string | null {
+  if (row.invoiceClosingDate) {
+    return formatInvoiceMonthTitle(row.invoiceClosingDate)
+  }
+  if (row.pluggyBillCloseDate) {
+    return formatInvoiceMonthTitle(row.pluggyBillCloseDate)
+  }
+  if (row.invoiceDueDate) {
+    return formatInvoiceMonthTitle(row.invoiceDueDate)
+  }
+  if (row.invoiceStartingDate) {
+    return formatInvoiceMonthTitle(row.invoiceStartingDate)
+  }
+  if (row.pluggyBillDueDate) {
+    return formatInvoiceMonthTitle(row.pluggyBillDueDate)
+  }
+  return null
+}
+
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+const EXCLUDE_FUTURE_OZ_STORAGE_KEY = 'balances.excludeFutureOz'
+
+function readExcludeFutureOzPreference(): boolean {
+  try {
+    return window.localStorage.getItem(EXCLUDE_FUTURE_OZ_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeExcludeFutureOzPreference(value: boolean): void {
+  try {
+    window.localStorage.setItem(
+      EXCLUDE_FUTURE_OZ_STORAGE_KEY,
+      value ? '1' : '0',
+    )
+  } catch {
+    // ignore quota / private mode
+  }
 }
 
 function parseBRLInput(value: string): number | null {
@@ -166,21 +246,31 @@ export function BalancesView({ apiFetch, onError }: Props) {
   const [saving, setSaving] = useState(false)
   const [togglingKey, setTogglingKey] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  const [excludeFutureOz, setExcludeFutureOz] = useState(
+    readExcludeFutureOzPreference,
+  )
+  const [invoiceModeBusy, setInvoiceModeBusy] = useState(false)
+  const excludeFutureOzRef = useRef(excludeFutureOz)
+  excludeFutureOzRef.current = excludeFutureOz
 
   const loadSnapshot = useCallback(
-    async (options?: { silent?: boolean }) => {
+    async (options?: { silent?: boolean; excludeFutureOz?: boolean }) => {
+      const excludeFuture =
+        options?.excludeFutureOz ?? excludeFutureOzRef.current
       if (!options?.silent) {
         onError(null)
         setLoading(true)
         setStatusMessage('Carregando saldos…')
       }
       try {
+        const query = excludeFuture ? '?excludeFutureOz=1' : ''
         const [raw, cats] = await Promise.all([
-          apiFetch<BalanceSnapshotResponse>('/api/balances/snapshot'),
+          apiFetch<BalanceSnapshotResponse>(`/api/balances/snapshot${query}`),
           apiFetch<CategoryOption[]>('/api/organizze/categories'),
         ])
         const data: BalanceSnapshotResponse = {
           ...raw,
+          excludeFutureOz: raw.excludeFutureOz ?? excludeFuture,
           invoiceRows: raw.invoiceRows ?? [],
           unmappedCreditAccounts: raw.unmappedCreditAccounts ?? [],
         }
@@ -259,6 +349,24 @@ export function BalancesView({ apiFetch, onError }: Props) {
     void loadSnapshot().catch(() => undefined)
   }, [loadSnapshot])
 
+  const onExcludeFutureOzChange = async (checked: boolean) => {
+    if (invoiceModeBusy || loading || saving) {
+      return
+    }
+    const previous = excludeFutureOz
+    writeExcludeFutureOzPreference(checked)
+    setExcludeFutureOz(checked)
+    setInvoiceModeBusy(true)
+    onError(null)
+    try {
+      await loadSnapshot({ silent: true, excludeFutureOz: checked })
+    } catch {
+      writeExcludeFutureOzPreference(previous)
+      setExcludeFutureOz(previous)
+    } finally {
+      setInvoiceModeBusy(false)
+    }
+  }
   const toggleOptionalSourceIncluded = async (
     row: BalanceSnapshotRow,
     source: BalanceSnapshotSource,
@@ -356,6 +464,88 @@ export function BalancesView({ apiFetch, onError }: Props) {
     setAdjustCategoryId('')
     onError(null)
   }
+
+  const invoiceGroups = useMemo(() => {
+    const rows = snapshot?.invoiceRows ?? []
+    const byCard = new Map<string, InvoiceBalanceRow[]>()
+    for (const row of rows) {
+      const key = `${row.organizzeCreditCardId}:${row.pluggyAccountId}`
+      const list = byCard.get(key) ?? []
+      list.push(row)
+      byCard.set(key, list)
+    }
+    return [...byCard.entries()].map(([key, cardRows]) => {
+      const first = cardRows[0]
+      return {
+        key,
+        organizzeCreditCardName: first.organizzeCreditCardName,
+        pluggyAccountName: first.pluggyAccountName,
+        rows: cardRows,
+        hasDiverged: cardRows.some((row) => row.status === 'diverged'),
+        allOk:
+          cardRows.length > 0 &&
+          cardRows.every(
+            (row) =>
+              row.status === 'ok' ||
+              row.status === 'empty' ||
+              row.status === 'open_pending',
+          ),
+      }
+    })
+  }, [snapshot?.invoiceRows])
+
+  type BalanceTab =
+    | {
+        id: string
+        kind: 'account'
+        label: string
+        warn: boolean
+        row: BalanceSnapshotRow
+      }
+    | {
+        id: string
+        kind: 'invoice'
+        label: string
+        warn: boolean
+        group: (typeof invoiceGroups)[number]
+      }
+
+  const balanceTabs = useMemo((): BalanceTab[] => {
+    const accountTabs: BalanceTab[] = (snapshot?.rows ?? []).map((row) => ({
+      id: `account:${row.organizzeAccountId}`,
+      kind: 'account',
+      label: row.organizzeAccountName,
+      warn: row.status === 'diverged',
+      row,
+    }))
+    const cardTabs: BalanceTab[] = invoiceGroups.map((group) => ({
+      id: `invoice:${group.key}`,
+      kind: 'invoice',
+      label: group.organizzeCreditCardName,
+      warn: group.hasDiverged,
+      group,
+    }))
+    return [...accountTabs, ...cardTabs]
+  }, [snapshot?.rows, invoiceGroups])
+
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (balanceTabs.length === 0) {
+      setActiveTabId(null)
+      return
+    }
+    setActiveTabId((current) => {
+      if (current && balanceTabs.some((tab) => tab.id === current)) {
+        return current
+      }
+      const firstWarn = balanceTabs.find((tab) => tab.warn)
+      return firstWarn?.id ?? balanceTabs[0]!.id
+    })
+  }, [balanceTabs])
+
+  const activeTab =
+    balanceTabs.find((tab) => tab.id === activeTabId) ?? balanceTabs[0] ?? null
 
   const closeAdjust = () => {
     if (saving) {
@@ -538,266 +728,373 @@ export function BalancesView({ apiFetch, onError }: Props) {
         </div>
       ) : (
         <>
-          {snapshot.rows.length > 0 ? (
-            <ul className={`balance-list ${saving ? 'is-busy' : ''}`}>
-              {snapshot.rows.map((row) => (
-                <li
-                  key={row.organizzeAccountId}
-                  className={`balance-card ${row.status === 'diverged' ? 'is-diverged' : 'is-ok'}`}
+          {balanceTabs.length > 1 ? (
+            <div
+              className="reports-tabs settings-tabs balance-account-tabs"
+              role="tablist"
+              aria-label="Contas e cartões"
+            >
+              {balanceTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab?.id === tab.id}
+                  className={activeTab?.id === tab.id ? 'active' : ''}
+                  onClick={() => setActiveTabId(tab.id)}
                 >
-                  <div className="balance-card-head">
-                    <div>
-                      <span
-                        className={`badge balance-status ${row.status === 'ok' ? 'is-ok' : 'is-diverged'}`}
-                      >
-                        {row.status === 'ok' ? 'OK' : 'Divergente'}
-                      </span>
-                      <strong>{row.organizzeAccountName}</strong>
-                    </div>
-                    {row.status === 'diverged' ? (
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={saving}
-                        onClick={() => openAdjust(row)}
-                      >
-                        Ajustar
-                      </button>
-                    ) : null}
-                  </div>
-
-                  <div className="balance-grid">
-                    <div>
-                      <span>Open Finance</span>
-                      <strong>{formatBRL(row.openFinanceBalanceCents)}</strong>
-                    </div>
-                    <div>
-                      <span>Organizze</span>
-                      <strong>{formatBRL(row.organizzeBalanceCents)}</strong>
-                    </div>
-                    <div>
-                      <span>Diferença</span>
-                      <strong
-                        className={
-                          row.diffCents === 0
-                            ? ''
-                            : row.diffCents > 0
-                              ? 'pos'
-                              : 'neg'
-                        }
-                      >
-                        {row.diffCents > 0 ? '+' : ''}
-                        {formatBRL(row.diffCents)}
-                      </strong>
-                    </div>
-                  </div>
-
-                  <div className="balance-sources">
-                    <span className="balance-sources-label">
-                      Fontes OF · desmarque investments/reservados para ignorar
+                  <span className="balance-tab-label">{tab.label}</span>
+                  {tab.warn ? (
+                    <span className="settings-tab-count is-warn">!</span>
+                  ) : (
+                    <span className="settings-tab-count">
+                      {tab.kind === 'account' ? 'Conta' : 'Cartão'}
                     </span>
-                    <ul>
-                      {row.sources.map((source) => {
-                        const canToggle =
-                          source.sourceKind === 'investment' ||
-                          source.sourceKind === 'reserved'
-                        const busyToggle = togglingKey === source.sourceKey
-                        const kindLabel =
-                          source.sourceKind === 'investment'
-                            ? 'investment'
-                            : source.sourceKind === 'reserved'
-                              ? 'reservado'
-                              : 'conta'
-                        return (
-                          <li
-                            key={source.sourceKey}
-                            className={
-                              source.included ? undefined : 'is-excluded'
-                            }
-                          >
-                            {canToggle ? (
-                              <label className="balance-source-toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={source.included}
-                                  disabled={saving || busyToggle}
-                                  onChange={(event) =>
-                                    void toggleOptionalSourceIncluded(
-                                      row,
-                                      source,
-                                      event.target.checked,
-                                    )
-                                  }
-                                />
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {activeTab?.kind === 'account' ? (
+            <ul className={`balance-list ${saving ? 'is-busy' : ''}`}>
+              {(() => {
+                const row = activeTab.row
+                return (
+                  <li
+                    key={row.organizzeAccountId}
+                    className={`balance-card ${row.status === 'diverged' ? 'is-diverged' : 'is-ok'}`}
+                  >
+                    <div className="balance-card-head">
+                      <div>
+                        <span
+                          className={`badge balance-status ${row.status === 'ok' ? 'is-ok' : 'is-diverged'}`}
+                        >
+                          {row.status === 'ok' ? 'OK' : 'Divergente'}
+                        </span>
+                        <strong>{row.organizzeAccountName}</strong>
+                      </div>
+                      {row.status === 'diverged' ? (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={saving}
+                          onClick={() => openAdjust(row)}
+                        >
+                          Ajustar
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <div className="balance-grid">
+                      <div>
+                        <span>Open Finance</span>
+                        <strong>
+                          {formatBRL(row.openFinanceBalanceCents)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Organizze</span>
+                        <strong>{formatBRL(row.organizzeBalanceCents)}</strong>
+                      </div>
+                      <div>
+                        <span>Diferença</span>
+                        <strong
+                          className={
+                            row.diffCents === 0
+                              ? ''
+                              : row.diffCents > 0
+                                ? 'pos'
+                                : 'neg'
+                          }
+                        >
+                          {row.diffCents > 0 ? '+' : ''}
+                          {formatBRL(row.diffCents)}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div className="balance-sources">
+                      <span className="balance-sources-label">
+                        Fontes OF · desmarque investments/reservados para
+                        ignorar
+                      </span>
+                      <ul>
+                        {row.sources.map((source) => {
+                          const canToggle =
+                            source.sourceKind === 'investment' ||
+                            source.sourceKind === 'reserved'
+                          const busyToggle = togglingKey === source.sourceKey
+                          const kindLabel =
+                            source.sourceKind === 'investment'
+                              ? 'investment'
+                              : source.sourceKind === 'reserved'
+                                ? 'reservado'
+                                : 'conta'
+                          return (
+                            <li
+                              key={source.sourceKey}
+                              className={
+                                source.included ? undefined : 'is-excluded'
+                              }
+                            >
+                              {canToggle ? (
+                                <label className="balance-source-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={source.included}
+                                    disabled={saving || busyToggle}
+                                    onChange={(event) =>
+                                      void toggleOptionalSourceIncluded(
+                                        row,
+                                        source,
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  <span>
+                                    {source.label}
+                                    {source.connectionName
+                                      ? ` · ${source.connectionName}`
+                                      : ''}
+                                    {` · ${kindLabel}`}
+                                    {!source.included ? ' · ignorado' : ''}
+                                  </span>
+                                </label>
+                              ) : (
                                 <span>
                                   {source.label}
                                   {source.connectionName
                                     ? ` · ${source.connectionName}`
                                     : ''}
                                   {` · ${kindLabel}`}
-                                  {!source.included ? ' · ignorado' : ''}
                                 </span>
-                              </label>
-                            ) : (
-                              <span>
-                                {source.label}
-                                {source.connectionName
-                                  ? ` · ${source.connectionName}`
-                                  : ''}
-                                {` · ${kindLabel}`}
-                              </span>
-                            )}
-                            <strong
-                              className={source.included ? undefined : 'muted'}
-                            >
-                              {formatBRL(source.balanceCents)}
-                            </strong>
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  </div>
-                </li>
-              ))}
+                              )}
+                              <strong
+                                className={
+                                  source.included ? undefined : 'muted'
+                                }
+                              >
+                                {formatBRL(source.balanceCents)}
+                              </strong>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    </div>
+                  </li>
+                )
+              })()}
             </ul>
           ) : null}
 
-          {snapshot.invoiceRows.length > 0 ? (
+          {activeTab?.kind === 'invoice' ? (
             <section className="balance-invoice-section">
               <header className="balance-section-head">
                 <h2>Faturas de cartão</h2>
                 <p>
-                  Compara a fatura fechada do Open Finance (Bills) com o total
-                  da fatura no Organizze. Em divergência, crie um lançamento de
-                  ajuste na fatura.
+                  Fatura fechada e aberta comparado com o Open Finance. Em
+                  divergência, ajuste na fatura Oz.
                 </p>
               </header>
-              <ul className={`balance-list ${saving ? 'is-busy' : ''}`}>
-                {snapshot.invoiceRows.map((row) => {
-                  const invoiceTitle = row.invoiceDueDate
-                    ? formatInvoiceMonthTitle(row.invoiceDueDate)
-                    : row.invoiceStartingDate
-                      ? formatInvoiceMonthTitle(row.invoiceStartingDate)
-                      : row.pluggyBillDueDate
-                        ? formatInvoiceMonthTitle(row.pluggyBillDueDate)
-                        : null
-                  const statusLabel =
-                    row.status === 'ok'
-                      ? 'OK'
-                      : row.status === 'no_invoice'
-                        ? 'Sem fatura Oz'
-                        : row.status === 'no_pluggy_bill'
-                          ? 'Sem fatura OF'
-                          : 'Divergente'
-                  const statusClass =
-                    row.status === 'ok'
-                      ? 'is-ok'
-                      : row.status === 'diverged'
-                        ? 'is-diverged'
-                        : 'is-muted'
+              <ul
+                className={`balance-list${saving || invoiceModeBusy ? ' is-busy' : ''}`}
+                aria-busy={invoiceModeBusy || undefined}
+              >
+                {(() => {
+                  const group = activeTab.group
                   return (
                     <li
-                      key={`${row.organizzeCreditCardId}-${row.pluggyAccountId}`}
-                      className={`balance-card ${
-                        row.status === 'diverged'
+                      key={group.key}
+                      className={`balance-card balance-invoice-card ${
+                        group.hasDiverged
                           ? 'is-diverged'
-                          : row.status === 'ok'
+                          : group.allOk
                             ? 'is-ok'
                             : ''
                       }`}
                     >
                       <div className="balance-card-head">
                         <div>
-                          <span className={`badge balance-status ${statusClass}`}>
-                            {statusLabel}
-                          </span>
-                          <strong>{row.organizzeCreditCardName}</strong>
+                          <strong>{group.organizzeCreditCardName}</strong>
                           <span className="balance-card-sub">
-                            {row.pluggyAccountName}
-                            {invoiceTitle ? ` · ${invoiceTitle}` : ''}
+                            {group.pluggyAccountName}
                           </span>
-                        </div>
-                        {row.status === 'diverged' && row.invoiceId !== null ? (
-                          <button
-                            type="button"
-                            className="btn"
-                            disabled={saving}
-                            onClick={() => openAdjustInvoice(row)}
-                          >
-                            Ajustar
-                          </button>
-                        ) : null}
-                      </div>
-
-                      <div className="balance-grid">
-                        <div>
-                          <span>Fatura OF</span>
-                          <strong>
-                            {row.pluggyBillTotalCents === null
-                              ? '—'
-                              : formatBRL(row.pluggyBillTotalCents)}
-                          </strong>
-                        </div>
-                        <div>
-                          <span>Fatura Organizze</span>
-                          <strong>
-                            {row.organizzeAmountCents === null
-                              ? '—'
-                              : formatBRL(row.organizzeAmountCents)}
-                          </strong>
-                        </div>
-                        <div>
-                          <span>Diferença</span>
-                          <strong
-                            className={
-                              row.diffCents === null || row.diffCents === 0
-                                ? ''
-                                : row.diffCents > 0
-                                  ? 'pos'
-                                  : 'neg'
-                            }
-                          >
-                            {row.diffCents === null
-                              ? '—'
-                              : `${row.diffCents > 0 ? '+' : ''}${formatBRL(row.diffCents)}`}
-                          </strong>
                         </div>
                       </div>
 
-                      <div className="balance-invoice-meta">
-                        {row.organizzePaymentCents ? (
-                          <span>
-                            Pago Oz {formatBRL(row.organizzePaymentCents)}
-                            {row.organizzeBalanceCents !== null
-                              ? ` · restante ${formatBRL(row.organizzeBalanceCents)}`
-                              : ''}
-                          </span>
-                        ) : null}
-                        {row.invoiceDueDate ? (
-                          <span>
-                            Venc. Oz {formatInvoiceDate(row.invoiceDueDate)}
-                          </span>
-                        ) : null}
-                        {row.pluggyBillDueDate ? (
-                          <span>
-                            Venc. OF {formatInvoiceDate(row.pluggyBillDueDate)}
-                          </span>
-                        ) : null}
-                        {row.pluggyBillCloseDate ? (
-                          <span>
-                            Fecha OF{' '}
-                            {formatInvoiceDate(row.pluggyBillCloseDate)}
-                          </span>
-                        ) : null}
-                        {row.pluggyMinimumPaymentCents ? (
-                          <span>
-                            Mín. OF {formatBRL(row.pluggyMinimumPaymentCents)}
-                          </span>
-                        ) : null}
-                      </div>
+                      <ul className="balance-invoice-cycles">
+                        {group.rows.map((row) => {
+                          const title = invoiceCycleTitle(row)
+                          const cycleLabel =
+                            row.invoiceCycle === 'closed'
+                              ? 'Fechada'
+                              : row.invoiceCycle === 'open'
+                                ? 'Aberta'
+                                : 'Fatura'
+                          const isOpenCycle = row.invoiceCycle === 'open'
+                          return (
+                            <li
+                              key={`${row.invoiceId ?? 'x'}-${row.invoiceCycle ?? 'none'}`}
+                              className="balance-invoice-cycle"
+                            >
+                              <div className="balance-invoice-cycle-head">
+                                <div className="balance-invoice-badges">
+                                  <span
+                                    className={`badge balance-cycle ${
+                                      isOpenCycle ? 'is-open' : 'is-closed'
+                                    }`}
+                                  >
+                                    {cycleLabel}
+                                    {title ? ` · ${title}` : ''}
+                                  </span>
+                                  <span
+                                    className={`badge balance-status ${invoiceStatusClass(row.status)}`}
+                                  >
+                                    {invoiceStatusLabel(row.status)}
+                                  </span>
+                                </div>
+                                <div className="balance-invoice-cycle-actions">
+                                  {isOpenCycle ? (
+                                    <button
+                                      type="button"
+                                      className={`balance-invoice-chip${excludeFutureOz ? ' is-on' : ''}${invoiceModeBusy ? ' is-busy' : ''}`}
+                                      disabled={
+                                        loading || saving || invoiceModeBusy
+                                      }
+                                      aria-busy={invoiceModeBusy}
+                                      title={
+                                        excludeFutureOz
+                                          ? 'Oz só com lançamentos até hoje. Clique para voltar ao total da fatura.'
+                                          : 'Oz com o total da fatura (inclui fixos futuros). Clique para ignorar datas futuras.'
+                                      }
+                                      onClick={() =>
+                                        void onExcludeFutureOzChange(
+                                          !excludeFutureOz,
+                                        )
+                                      }
+                                    >
+                                      {invoiceModeBusy ? (
+                                        <>
+                                          <span
+                                            className="spinner sm"
+                                            aria-hidden
+                                          />
+                                          Atualizando…
+                                        </>
+                                      ) : excludeFutureOz ? (
+                                        'Oz até hoje'
+                                      ) : (
+                                        'Oz completo'
+                                      )}
+                                    </button>
+                                  ) : null}
+                                  {row.status === 'diverged' &&
+                                  row.invoiceId !== null ? (
+                                    <button
+                                      type="button"
+                                      className="btn"
+                                      disabled={
+                                        saving || loading || invoiceModeBusy
+                                      }
+                                      onClick={() => openAdjustInvoice(row)}
+                                    >
+                                      Ajustar
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              <div className="balance-grid">
+                                <div>
+                                  <span>Fatura OF</span>
+                                  <strong>
+                                    {row.pluggyBillTotalCents === null
+                                      ? '—'
+                                      : formatBRL(row.pluggyBillTotalCents)}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>Fatura Organizze</span>
+                                  <strong>
+                                    {row.organizzeAmountCents === null
+                                      ? '—'
+                                      : formatBRL(row.organizzeAmountCents)}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>Diferença</span>
+                                  <strong
+                                    className={
+                                      row.diffCents === null ||
+                                      row.diffCents === 0
+                                        ? ''
+                                        : row.diffCents > 0
+                                          ? 'pos'
+                                          : 'neg'
+                                    }
+                                  >
+                                    {row.diffCents === null
+                                      ? '—'
+                                      : `${row.diffCents > 0 ? '+' : ''}${formatBRL(row.diffCents)}`}
+                                  </strong>
+                                </div>
+                              </div>
+
+                              {row.pluggyMatchHint ? (
+                                <p className="balance-invoice-hint">
+                                  {row.pluggyMatchHint}
+                                  {row.status === 'no_pluggy_bill' &&
+                                  row.pluggyBillsFound > 0
+                                    ? ` · ${row.pluggyBillsFound} fatura${row.pluggyBillsFound === 1 ? '' : 's'} OF`
+                                    : ''}
+                                </p>
+                              ) : null}
+
+                              <div className="balance-invoice-meta">
+                                {row.organizzePaymentCents ? (
+                                  <span>
+                                    Pago Oz{' '}
+                                    {formatBRL(row.organizzePaymentCents)}
+                                    {row.organizzeBalanceCents !== null
+                                      ? ` · restante ${formatBRL(row.organizzeBalanceCents)}`
+                                      : ''}
+                                  </span>
+                                ) : null}
+                                {row.invoiceDueDate ? (
+                                  <span>
+                                    Venc. Oz{' '}
+                                    {formatInvoiceDate(row.invoiceDueDate)}
+                                  </span>
+                                ) : null}
+                                {row.pluggyBillDueDate ? (
+                                  <span>
+                                    Venc. OF{' '}
+                                    {formatInvoiceDate(row.pluggyBillDueDate)}
+                                  </span>
+                                ) : null}
+                                {row.pluggyBillCloseDate ? (
+                                  <span>
+                                    Fecha OF{' '}
+                                    {formatInvoiceDate(row.pluggyBillCloseDate)}
+                                  </span>
+                                ) : null}
+                                {row.pluggyMatchOrigin ===
+                                'account_balance' ? (
+                                  <span>OF via saldo − ciclos futuros</span>
+                                ) : null}
+                                {row.pluggyMatchOrigin ===
+                                'transactions_sum' ? (
+                                  <span>OF via lançamentos</span>
+                                ) : null}
+                              </div>
+                            </li>
+                          )
+                        })}
+                      </ul>
                     </li>
                   )
-                })}
+                })()}
               </ul>
             </section>
           ) : null}
