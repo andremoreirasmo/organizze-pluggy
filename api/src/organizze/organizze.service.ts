@@ -10,9 +10,11 @@ import {
   OrganizzeCategory,
   OrganizzeCreditCard,
   OrganizzeInvoice,
+  OrganizzeTag,
   OrganizzeTransaction,
   UpdateOrganizzeTransactionPayload,
 } from './organizze.types';
+import { TAG_NAME_MAX_LEN } from './organizze-tags';
 import {
   appendPluggyMarker,
   extractPluggyIds,
@@ -185,6 +187,42 @@ export class OrganizzeService {
 
   getTransaction(id: number): Promise<OrganizzeTransaction> {
     return this.request<OrganizzeTransaction>(`/transactions/${id}`);
+  }
+
+  /**
+   * Organizze has no GET /tags. Harvest unique tag names from recent txs.
+   */
+  async listTags(options?: { days?: number }): Promise<OrganizzeTag[]> {
+    const days =
+      typeof options?.days === 'number' && options.days > 0
+        ? Math.min(Math.floor(options.days), 365)
+        : 90;
+    const end = new Date();
+    const start = new Date(end);
+    start.setUTCDate(start.getUTCDate() - days);
+    const endDate = end.toISOString().slice(0, 10);
+    const startDate = start.toISOString().slice(0, 10);
+    const transactions = await this.listTransactions({ startDate, endDate });
+    const seen = new Set<string>();
+    const tags: OrganizzeTag[] = [];
+    for (const tx of transactions) {
+      for (const tag of tx.tags ?? []) {
+        const name = (tag.name ?? '').trim().slice(0, TAG_NAME_MAX_LEN);
+        if (!name) {
+          continue;
+        }
+        const key = name.toLowerCase();
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        tags.push({ name });
+      }
+    }
+    tags.sort((a, b) =>
+      a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' }),
+    );
+    return tags;
   }
 
   async listCreditCards(options?: {

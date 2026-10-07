@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
+import { TagPicker, type TagOption } from './TagPicker'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CreditCardPicker } from './CreditCardPicker'
 import { FilterDropdown } from './FilterDropdown'
@@ -769,6 +770,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [importDescription, setImportDescription] = useState('')
   const [importAmount, setImportAmount] = useState('')
   const [importCategoryId, setImportCategoryId] = useState('')
+  const [importTags, setImportTags] = useState<string[]>([])
+  const [organizzeTags, setOrganizzeTags] = useState<TagOption[]>([])
+  const [organizzeTagsLoaded, setOrganizzeTagsLoaded] = useState(false)
   const [invoiceCardId, setInvoiceCardId] = useState('')
   const [invoiceId, setInvoiceId] = useState('')
   const [invoicePaymentAccountId, setInvoicePaymentAccountId] = useState('')
@@ -1281,6 +1285,20 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     })()
   }
 
+  const ensureOrganizzeTagsLoaded = useCallback(async () => {
+    if (organizzeTagsLoaded) {
+      return
+    }
+    try {
+      const tags = await apiFetch<TagOption[]>('/api/organizze/tags')
+      setOrganizzeTags(tags)
+      setOrganizzeTagsLoaded(true)
+    } catch {
+      // Suggestions are optional; create-by-name still works.
+      setOrganizzeTagsLoaded(true)
+    }
+  }, [apiFetch, organizzeTagsLoaded])
+
   const openCreateModal = (item: ReconciliationQueueItem) => {
     if (isInvoicePaymentItem(item.pluggy)) {
       openInvoicePaymentModal(item)
@@ -1298,6 +1316,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         : formatSignedAmountInput(item.pluggy.organizzeAmountCents),
     )
     setImportCategoryId('')
+    setImportTags([])
     setInvoiceCardId('')
     setInvoiceId('')
     setInvoicePaymentAccountId(
@@ -1314,6 +1333,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         : '',
     )
     onError(null)
+    void ensureOrganizzeTagsLoaded()
     if (item.pluggy.kind === 'credit_purchase') {
       const cardId = item.pluggy.mappedOrganizzeTargetId
       const pluggyId = item.pluggy.id
@@ -1637,7 +1657,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
       await apiFetch(`/api/reconciliation/${item.pluggy.id}/import`, {
         method: 'POST',
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          ...body,
+          ...(importTags.length > 0 ? { tags: importTags } : {}),
+        }),
       })
       console.info(
         `[perf] import ${item.pluggy.id} client ${Math.round(performance.now() - started)}ms`,
@@ -2660,6 +2683,19 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       disabled={modalBusy}
                       onChange={setImportCategoryId}
                     />
+                  </label>
+
+                  <label>
+                    Tags
+                    <TagPicker
+                      suggestions={organizzeTags}
+                      value={importTags}
+                      disabled={modalBusy}
+                      onChange={setImportTags}
+                    />
+                    <small className="field-hint">
+                      Selecione existentes ou digite e Enter para criar.
+                    </small>
                   </label>
 
                   {createItem.pluggy.kind === 'credit_purchase' ? (

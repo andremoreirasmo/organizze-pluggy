@@ -19,6 +19,14 @@ export class OrganizzeController {
     });
   }
 
+  @Get('tags')
+  listTags(@Query('days') days?: string) {
+    const parsed = days ? Number(days) : undefined;
+    return this.organizze.listTags({
+      days: Number.isFinite(parsed) ? parsed : undefined,
+    });
+  }
+
   @Get('transactions')
   listTransactions(
     @Query('startDate') startDate: string,

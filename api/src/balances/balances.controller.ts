@@ -6,10 +6,13 @@ import {
   Query,
 } from '@nestjs/common';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsInt,
   IsOptional,
   IsString,
   Matches,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -37,6 +40,13 @@ class AdjustBalanceDto {
   @Type(() => Number)
   @IsInt()
   categoryId?: number | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(40, { each: true })
+  tags?: string[];
 }
 
 class AdjustInvoiceDto {
@@ -66,6 +76,13 @@ class AdjustInvoiceDto {
   @Type(() => Number)
   @IsInt()
   categoryId?: number | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(40, { each: true })
+  tags?: string[];
 }
 
 function parseBooleanQuery(value: string | undefined): boolean {

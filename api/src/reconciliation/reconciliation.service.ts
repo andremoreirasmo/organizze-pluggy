@@ -7,6 +7,7 @@ import {
 import { Prisma, ReviewDecisionType } from '@prisma/client';
 import type { Account, Transaction as PluggyTransaction } from 'pluggy-sdk';
 import { OrganizzeService } from '../organizze/organizze.service';
+import { normalizeOrganizzeTagNames } from '../organizze/organizze-tags';
 import {
   OrganizzeTransaction,
 } from '../organizze/organizze.types';
@@ -336,6 +337,7 @@ export class ReconciliationService {
       creditCardInvoiceId?: number | null;
       paid?: boolean;
       amountCents?: number;
+      tags?: string[];
     },
   ) {
     const perf = startPerf(`import ${pluggyTxId}`);
@@ -351,6 +353,7 @@ export class ReconciliationService {
       body.amountCents !== undefined
         ? body.amountCents
         : pluggy.organizzeAmountCents;
+    const tags = normalizeOrganizzeTagNames(body.tags);
     const [accountNames, cardNames] = await Promise.all([
       this.loadOrganizzeAccountNames(),
       this.loadOrganizzeCreditCardNames(),
@@ -379,6 +382,7 @@ export class ReconciliationService {
         credit_card_invoice_id: body.creditCardInvoiceId ?? null,
         installment: pluggy.installmentNumber ?? 1,
         total_installments: pluggy.totalInstallments ?? 1,
+        ...(tags ? { tags } : {}),
       });
       perf.mark('organizze.createTransaction');
 
@@ -426,6 +430,7 @@ export class ReconciliationService {
       notes,
       category_id: body.categoryId ?? null,
       account_id: accountId,
+      ...(tags ? { tags } : {}),
     });
     perf.mark('organizze.createTransaction');
 

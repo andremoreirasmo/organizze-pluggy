@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
+import { TagPicker, type TagOption } from './TagPicker'
 import {
   formatInvoiceDate,
   formatInvoiceMonthTitle,
@@ -243,6 +244,9 @@ export function BalancesView({ apiFetch, onError }: Props) {
   const [adjustDate, setAdjustDate] = useState(todayISO)
   const [adjustDescription, setAdjustDescription] = useState('')
   const [adjustCategoryId, setAdjustCategoryId] = useState('')
+  const [adjustTags, setAdjustTags] = useState<string[]>([])
+  const [organizzeTags, setOrganizzeTags] = useState<TagOption[]>([])
+  const [organizzeTagsLoaded, setOrganizzeTagsLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [togglingKey, setTogglingKey] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
@@ -349,6 +353,19 @@ export function BalancesView({ apiFetch, onError }: Props) {
     void loadSnapshot().catch(() => undefined)
   }, [loadSnapshot])
 
+  const ensureOrganizzeTagsLoaded = useCallback(async () => {
+    if (organizzeTagsLoaded) {
+      return
+    }
+    try {
+      const tags = await apiFetch<TagOption[]>('/api/organizze/tags')
+      setOrganizzeTags(tags)
+      setOrganizzeTagsLoaded(true)
+    } catch {
+      setOrganizzeTagsLoaded(true)
+    }
+  }, [apiFetch, organizzeTagsLoaded])
+
   const onExcludeFutureOzChange = async (checked: boolean) => {
     if (invoiceModeBusy || loading || saving) {
       return
@@ -443,7 +460,9 @@ export function BalancesView({ apiFetch, onError }: Props) {
         : 'Ajuste de saldo (perda)',
     )
     setAdjustCategoryId('')
+    setAdjustTags([])
     onError(null)
+    void ensureOrganizzeTagsLoaded()
   }
 
   const openAdjustInvoice = (row: InvoiceBalanceRow) => {
@@ -462,7 +481,9 @@ export function BalancesView({ apiFetch, onError }: Props) {
         : 'Ajuste de fatura (crédito)',
     )
     setAdjustCategoryId('')
+    setAdjustTags([])
     onError(null)
+    void ensureOrganizzeTagsLoaded()
   }
 
   const invoiceGroups = useMemo(() => {
@@ -580,6 +601,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
           ...(adjustCategoryId
             ? { categoryId: Number(adjustCategoryId) }
             : {}),
+          ...(adjustTags.length > 0 ? { tags: adjustTags } : {}),
         }),
       })
       setSnapshot({
@@ -624,6 +646,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
           ...(adjustCategoryId
             ? { categoryId: Number(adjustCategoryId) }
             : {}),
+          ...(adjustTags.length > 0 ? { tags: adjustTags } : {}),
         }),
       })
       setSnapshot({
@@ -1186,6 +1209,19 @@ export function BalancesView({ apiFetch, onError }: Props) {
               />
             </label>
 
+            <label>
+              Tags
+              <TagPicker
+                suggestions={organizzeTags}
+                value={adjustTags}
+                disabled={saving}
+                onChange={setAdjustTags}
+              />
+              <small className="field-hint">
+                Selecione existentes ou digite e Enter para criar.
+              </small>
+            </label>
+
             <div className="modal-actions">
               <button
                 type="button"
@@ -1301,6 +1337,19 @@ export function BalancesView({ apiFetch, onError }: Props) {
                 disabled={saving}
                 onChange={setAdjustCategoryId}
               />
+            </label>
+
+            <label>
+              Tags
+              <TagPicker
+                suggestions={organizzeTags}
+                value={adjustTags}
+                disabled={saving}
+                onChange={setAdjustTags}
+              />
+              <small className="field-hint">
+                Selecione existentes ou digite e Enter para criar.
+              </small>
             </label>
 
             <div className="modal-actions">

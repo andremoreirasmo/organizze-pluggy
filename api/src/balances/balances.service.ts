@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type { Account, CreditCardBills, Transaction } from 'pluggy-sdk';
 import { OrganizzeService } from '../organizze/organizze.service';
+import { normalizeOrganizzeTagNames } from '../organizze/organizze-tags';
 import type { OrganizzeInvoice } from '../organizze/organizze.types';
 import {
   PluggyService,
@@ -1600,6 +1601,7 @@ export class BalancesService {
     date: string;
     description?: string;
     categoryId?: number | null;
+    tags?: string[];
   }) {
     if (
       !Number.isFinite(body.organizzeAccountId) ||
@@ -1633,6 +1635,7 @@ export class BalancesService {
         ? 'Ajuste de saldo (rendimento)'
         : 'Ajuste de saldo (perda)');
     const notes = `[balance-adjust:${body.date}:oz:${body.organizzeAccountId}]`;
+    const tags = normalizeOrganizzeTagNames(body.tags);
 
     const created = await this.organizze.createTransaction({
       description,
@@ -1642,6 +1645,7 @@ export class BalancesService {
       notes,
       category_id: body.categoryId ?? null,
       account_id: body.organizzeAccountId,
+      ...(tags ? { tags } : {}),
     });
 
     return {
@@ -1662,6 +1666,7 @@ export class BalancesService {
     date: string;
     description?: string;
     categoryId?: number | null;
+    tags?: string[];
   }) {
     if (
       !Number.isFinite(body.organizzeCreditCardId) ||
@@ -1706,6 +1711,7 @@ export class BalancesService {
         ? 'Ajuste de fatura (lançamento)'
         : 'Ajuste de fatura (crédito)');
     const notes = `[invoice-adjust:${body.date}:card:${body.organizzeCreditCardId}:inv:${body.invoiceId}]`;
+    const tags = normalizeOrganizzeTagNames(body.tags);
 
     const created = await this.organizze.createTransaction({
       description,
@@ -1716,6 +1722,7 @@ export class BalancesService {
       category_id: body.categoryId ?? null,
       credit_card_id: body.organizzeCreditCardId,
       credit_card_invoice_id: body.invoiceId,
+      ...(tags ? { tags } : {}),
     });
 
     return {

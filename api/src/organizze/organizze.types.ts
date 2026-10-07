@@ -38,6 +38,10 @@ export type OrganizzeCategory = {
   default?: boolean;
 };
 
+export type OrganizzeTag = {
+  name: string;
+};
+
 export type OrganizzeTransaction = {
   id: number;
   description: string;
@@ -59,6 +63,7 @@ export type OrganizzeTransaction = {
   type?: string | null;
   oposite_transaction_id?: number | null;
   oposite_account_id?: number | null;
+  tags?: OrganizzeTag[];
 };
 
 export type CreateOrganizzeTransferPayload = {
@@ -112,6 +117,7 @@ export type CreateOrganizzeTransactionPayload = {
   recurring?: boolean;
   total_installments?: number;
   installment?: number;
+  tags?: OrganizzeTag[];
 };
 
 export type UpdateOrganizzeTransactionPayload = {
@@ -126,6 +132,7 @@ export type UpdateOrganizzeTransactionPayload = {
   credit_card_invoice_id?: number | null;
   update_future?: boolean;
   update_all?: boolean;
+  tags?: OrganizzeTag[];
 };
 
 export type CreateInvoicePaymentPayload = {

@@ -8,11 +8,14 @@ import {
   Query,
 } from '@nestjs/common';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsInt,
   IsOptional,
   IsString,
   Matches,
+  MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ReconciliationService } from './reconciliation.service';
@@ -87,6 +90,14 @@ class ImportDto extends DateRangeDto {
   @Type(() => Number)
   @IsInt()
   amountCents?: number;
+
+  /** Tag names to attach on create (Organizze creates missing ones). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(40, { each: true })
+  tags?: string[];
 }
 
 class InvoicePaymentDto extends DateRangeDto {

@@ -825,6 +825,105 @@
   background: var(--oz-surface);
 }
 
+.tag-picker {
+  position: relative;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.tag-picker.is-disabled {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.tag-picker-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.7rem;
+  border: 1px solid var(--oz-border);
+  border-radius: var(--oz-radius-sm);
+  padding: 0.4rem 0.55rem;
+  background: var(--oz-surface);
+  cursor: text;
+}
+
+.tag-picker.is-open .tag-picker-box {
+  border-color: color-mix(in srgb, var(--oz-green) 45%, var(--oz-border));
+}
+
+.tag-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--oz-border);
+  background: color-mix(in srgb, var(--oz-green) 12%, var(--oz-surface));
+  color: var(--oz-ink);
+  border-radius: 999px;
+  padding: 0.2rem 0.45rem 0.2rem 0.55rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tag-picker-chip-x {
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--oz-muted);
+}
+
+.tag-picker-input {
+  flex: 1 1 7rem;
+  min-width: 6rem;
+  border: 0 !important;
+  padding: 0.35rem 0.25rem !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none;
+}
+
+.tag-picker-suggestions {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  max-height: 12rem;
+  overflow: auto;
+  border: 1px solid var(--oz-border);
+  border-radius: 10px;
+  background: var(--oz-surface);
+  box-shadow: var(--oz-shadow);
+}
+
+.tag-picker-suggestions button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--oz-ink);
+  cursor: pointer;
+}
+
+.tag-picker-suggestions button:hover,
+.tag-picker-create {
+  background: color-mix(in srgb, var(--oz-green) 12%, var(--oz-surface));
+}
+
+.tag-picker-create {
+  font-weight: 650;
+  color: var(--oz-green-deep, var(--oz-green));
+}
+
 .icon-picker {
   display: grid;
   gap: 0.75rem;
@@ -5163,6 +5262,14 @@ html[data-theme='dark'] .balance-tab.is-active {
 
 html[data-theme='dark'] .balance-tab-dot {
   background: #e0a070;
+}
+
+html[data-theme='dark'] .tag-picker-chip {
+  background: color-mix(in srgb, var(--oz-green) 16%, var(--oz-surface-2));
+}
+
+html[data-theme='dark'] .tag-picker-suggestions {
+  background: var(--oz-surface-2);
 }
 
 html[data-theme='dark'] .modal-close:hover:not(:disabled),
