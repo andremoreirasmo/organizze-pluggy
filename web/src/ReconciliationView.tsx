@@ -672,14 +672,6 @@ function suggestInvoicePaymentAccountId(
   return active[0] ? String(active[0].id) : ''
 }
 
-/** Invoice payment only for detected candidates or bank outflows (never income). */
-function canOfferInvoicePayment(pluggy: QueuePluggyTransaction): boolean {
-  if (isInvoicePaymentItem(pluggy)) {
-    return true
-  }
-  return pluggy.kind === 'bank' && pluggy.organizzeAmountCents < 0
-}
-
 function isSamePersonTransfer(pluggy: QueuePluggyTransaction): boolean {
   return pluggy.kind === 'same_person_transfer'
 }
@@ -2719,65 +2711,6 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       />
                     </label>
                   ) : null}
-
-                  {canOfferInvoicePayment(createItem.pluggy) &&
-                  !createIsInvoicePayment ? (
-                    <>
-                      <label>
-                        Cartão (pagamento de fatura)
-                        <CreditCardPicker
-                          cards={creditCards}
-                          value={invoiceCardId}
-                          disabled={modalBusy}
-                          onChange={(next) => {
-                            setInvoiceCardId(next)
-                            setInvoiceId('')
-                            if (next) {
-                              void loadInvoices(Number(next))
-                            }
-                            setInvoicePaymentAccountId(
-                              suggestInvoicePaymentAccountId(
-                                next,
-                                createItem.pluggy,
-                                creditCards,
-                                organizzeAccounts,
-                              ),
-                            )
-                          }}
-                        />
-                      </label>
-                      {invoiceCardId ? (
-                        <label>
-                          Fatura
-                          <InvoicePicker
-                            invoices={
-                              invoicesByCard[Number(invoiceCardId)] ?? []
-                            }
-                            value={invoiceId}
-                            disabled={modalBusy}
-                            emptyLabel="Escolher fatura…"
-                            onOpen={() =>
-                              void loadInvoices(Number(invoiceCardId))
-                            }
-                            onChange={setInvoiceId}
-                          />
-                        </label>
-                      ) : null}
-                      {invoiceCardId ? (
-                        <label>
-                          Conta que desconta o saldo
-                          <OptionPicker
-                            value={invoicePaymentAccountId}
-                            options={invoicePaymentAccountOptions}
-                            disabled={modalBusy}
-                            placeholder="Escolher conta…"
-                            searchable
-                            onChange={setInvoicePaymentAccountId}
-                          />
-                        </label>
-                      ) : null}
-                    </>
-                  ) : null}
                 </>
               )}
                 </>
@@ -2816,29 +2749,14 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     Registrar pagamento de fatura
                   </button>
                 ) : (
-                  <>
-                    {canOfferInvoicePayment(createItem.pluggy) &&
-                    invoiceCardId &&
-                    invoiceId &&
-                    invoicePaymentAccountId ? (
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={modalBusy}
-                        onClick={() => void payInvoice(createItem)}
-                      >
-                        Registrar pagamento de fatura
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={modalBusy}
-                      onClick={() => void importTx(createItem)}
-                    >
-                      Criar no Organizze
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={modalBusy}
+                    onClick={() => void importTx(createItem)}
+                  >
+                    Criar no Organizze
+                  </button>
                 )}
               </div>
             </div>
