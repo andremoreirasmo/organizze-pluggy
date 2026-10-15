@@ -8,6 +8,7 @@ import {
   InvestmentsPanel,
   type InvestmentsOverviewResponse,
 } from './InvestmentsPanel'
+import { MonthNavigator } from './MonthNavigator'
 import { PullToRefresh } from './PullToRefresh'
 import {
   patchSearchParams,
@@ -35,15 +36,6 @@ function currentMonthKeySaoPaulo(): string {
   })
     .format(new Date())
     .slice(0, 7)
-}
-
-function formatMonthTitle(monthKey: string): string {
-  const [y, m] = monthKey.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('pt-BR', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  })
 }
 
 export function DashboardView({ apiFetch, onError }: Props) {
@@ -260,11 +252,12 @@ export function DashboardView({ apiFetch, onError }: Props) {
     syncDashboardUrl({ month: next }, 'replace')
   }, [installments, chartMonths, selectedMonth, syncDashboardUrl])
 
-  const monthTitle = formatMonthTitle(selectedMonth)
   const selectedIndex = chartMonths.indexOf(selectedMonth)
   const canGoPrev = selectedIndex > 0
   const canGoNext =
     selectedIndex >= 0 && selectedIndex < chartMonths.length - 1
+  const chartMin = chartMonths[0]
+  const chartMax = chartMonths[chartMonths.length - 1]
 
   return (
     <section className="dashboard reports">
@@ -273,50 +266,15 @@ export function DashboardView({ apiFetch, onError }: Props) {
           <header className="reports-header">
             <div className="reports-header-top">
               <h1>Relatórios</h1>
-              <div className="reports-month" aria-label="Mês de referência">
-                <button
-                  type="button"
-                  className="reports-month-arrow"
-                  disabled={loading || !canGoPrev}
-                  aria-label="Mês anterior"
-                  onClick={() => {
-                    if (!canGoPrev) {
-                      return
-                    }
-                    changeSelectedMonth(chartMonths[selectedIndex - 1])
-                  }}
-                >
-                  ‹
-                </button>
-                <button
-                  type="button"
-                  className="reports-month-label"
-                  disabled={loading || chartMonths.length === 0}
-                  title="Ir para o mês atual"
-                  onClick={() => {
-                    const today = currentMonthKeySaoPaulo()
-                    if (chartMonths.includes(today)) {
-                      changeSelectedMonth(today)
-                    }
-                  }}
-                >
-                  {monthTitle}
-                </button>
-                <button
-                  type="button"
-                  className="reports-month-arrow"
-                  disabled={loading || !canGoNext}
-                  aria-label="Próximo mês"
-                  onClick={() => {
-                    if (!canGoNext) {
-                      return
-                    }
-                    changeSelectedMonth(chartMonths[selectedIndex + 1])
-                  }}
-                >
-                  ›
-                </button>
-              </div>
+              <MonthNavigator
+                value={selectedMonth}
+                disabled={loading || chartMonths.length === 0}
+                min={chartMin}
+                max={chartMax}
+                disablePrev={!canGoPrev}
+                disableNext={!canGoNext}
+                onChange={changeSelectedMonth}
+              />
               <button
                 type="button"
                 className="reports-refresh"

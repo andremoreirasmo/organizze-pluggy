@@ -12,6 +12,7 @@ import {
   formatInvoiceDate,
   invoiceOptionLabel,
 } from './InvoicePicker'
+import { MonthNavigator } from './MonthNavigator'
 import { PullToRefresh } from './PullToRefresh'
 import {
   monthParamForUrl,
@@ -210,12 +211,6 @@ function monthBounds(yearMonth: string): { from: string; to: string } {
 function currentYearMonth(): string {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-}
-
-function shiftYearMonth(yearMonth: string, delta: number): string {
-  const [year, month] = yearMonth.split('-').map(Number)
-  const utc = new Date(Date.UTC(year, month - 1 + delta, 1))
-  return `${utc.getUTCFullYear()}-${String(utc.getUTCMonth() + 1).padStart(2, '0')}`
 }
 
 function formatBRL(amountCents: number): string {
@@ -1848,35 +1843,15 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
             </a>
           </div>
         </div>
-        <div className="recon-month" aria-label="Mês da conciliação">
-          <button
-            type="button"
-            className="recon-month-arrow"
-            disabled={toolbarBusy}
-            aria-label="Mês anterior"
-            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, -1))}
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            className="recon-month-label"
-            disabled={toolbarBusy}
-            title="Ir para o mês atual"
-            onClick={() => changeYearMonth(currentYearMonth())}
-          >
-            {formatMonthTitle(yearMonth)}
-          </button>
-          <button
-            type="button"
-            className="recon-month-arrow"
-            disabled={toolbarBusy}
-            aria-label="Próximo mês"
-            onClick={() => changeYearMonth(shiftYearMonth(yearMonth, 1))}
-          >
-            ›
-          </button>
-        </div>
+        <MonthNavigator
+          value={yearMonth}
+          disabled={toolbarBusy}
+          className="recon-month"
+          arrowClassName="recon-month-arrow"
+          labelClassName="recon-month-label"
+          ariaLabel="Mês da conciliação"
+          onChange={changeYearMonth}
+        />
       </div>
 
       {statusMessage || loading || action ? (

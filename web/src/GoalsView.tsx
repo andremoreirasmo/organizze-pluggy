@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { BottomSheet } from './BottomSheet'
 import { ConfirmDialog } from './ConfirmDialog'
+import { MonthNavigator } from './MonthNavigator'
 import { PullToRefresh } from './PullToRefresh'
 import {
   monthParamForUrl,
@@ -148,14 +149,6 @@ function formatMonthTitle(monthKey: string): string {
     year: 'numeric',
     timeZone: 'UTC',
   })
-}
-
-function shiftMonth(yearMonth: string, delta: number): string {
-  const [y, m] = yearMonth.split('-').map(Number)
-  const abs = y * 12 + (m - 1) + delta
-  const ny = Math.floor(abs / 12)
-  const nm = (abs % 12) + 1
-  return `${ny}-${String(nm).padStart(2, '0')}`
 }
 
 function parseUnsignedBRLInputToCents(value: string): number | null {
@@ -889,8 +882,6 @@ export function GoalsView({ apiFetch, onError }: Props) {
     }
   }
 
-  const monthTitle = formatMonthTitle(month)
-
   return (
     <>
       <PullToRefresh
@@ -901,33 +892,14 @@ export function GoalsView({ apiFetch, onError }: Props) {
           <header className="reports-header">
             <div className="reports-header-top">
               <h1>Metas</h1>
-              <div className="reports-month" aria-label="Mês de referência">
-                <button
-                  type="button"
-                  className="reports-month-arrow"
-                  aria-label="Mês anterior"
-                  onClick={() => {
-                    const next = shiftMonth(month, -1)
-                    setMonth(next)
-                    syncUrl(next, 'push')
-                  }}
-                >
-                  ‹
-                </button>
-                <span className="reports-month-label">{monthTitle}</span>
-                <button
-                  type="button"
-                  className="reports-month-arrow"
-                  aria-label="Próximo mês"
-                  onClick={() => {
-                    const next = shiftMonth(month, 1)
-                    setMonth(next)
-                    syncUrl(next, 'push')
-                  }}
-                >
-                  ›
-                </button>
-              </div>
+              <MonthNavigator
+                value={month}
+                disabled={loading}
+                onChange={(next) => {
+                  setMonth(next)
+                  syncUrl(next, 'push')
+                }}
+              />
               <div className="goals-header-actions">
                 <button
                   type="button"
