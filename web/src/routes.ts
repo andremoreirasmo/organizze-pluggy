@@ -2,6 +2,7 @@ export const ROUTES = {
   reconcile: '/conciliacao',
   balances: '/saldos',
   recurring: '/recorrencias',
+  goals: '/metas',
   dashboard: '/relatorios',
   settings: '/configuracoes',
 } as const
@@ -42,6 +43,9 @@ export function viewFromPath(pathname: string): AppView {
   }
   if (normalized === ROUTES.recurring) {
     return 'recurring'
+  }
+  if (normalized === ROUTES.goals) {
+    return 'goals'
   }
   if (normalized === ROUTES.dashboard) {
     return 'dashboard'

@@ -48,11 +48,6 @@ export function BottomSheet({
       className="sheet-backdrop"
       role="presentation"
       style={{ opacity: backdropOpacity }}
-      onClick={() => {
-        if (!busy) {
-          onClose()
-        }
-      }}
     >
       <div
         ref={sheetRef}
@@ -61,7 +56,6 @@ export function BottomSheet({
         aria-modal="true"
         aria-labelledby={labelledBy}
         style={{ transform: `translate3d(0, ${offsetY}px, 0)` }}
-        onClick={(event) => event.stopPropagation()}
       >
         <div className="sheet-grab" aria-hidden />
         <header className="sheet-head">

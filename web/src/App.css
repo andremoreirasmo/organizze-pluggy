@@ -5573,3 +5573,391 @@ html[data-theme='dark'] .recurring-card {
 html[data-theme='dark'] .recurring-preview {
   background: color-mix(in srgb, #fff 4%, var(--oz-surface));
 }
+
+/* —— Metas financeiras —— */
+.goals-body {
+  padding: 0 1.35rem 1.35rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.goals-alerts {
+  list-style: none;
+  margin: 0;
+  padding: 0.75rem 0.95rem;
+  border-radius: 12px;
+  border: 1px solid var(--oz-border);
+  background: color-mix(in srgb, var(--oz-ink) 4%, var(--oz-surface));
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.goals-card {
+  border: 1px solid var(--oz-border);
+  border-radius: 14px;
+  padding: 1rem 1.05rem;
+  display: grid;
+  gap: 0.85rem;
+  background: var(--oz-bg);
+}
+
+.goals-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.goals-card-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.goals-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.goals-stat-grid > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.goals-stat-grid span {
+  font-size: 0.78rem;
+  color: #868e96;
+}
+
+.goals-stat-grid strong {
+  font-size: 1.05rem;
+}
+
+.goals-stat-grid small {
+  font-size: 0.78rem;
+  color: #868e96;
+}
+
+.goals-stat-grid strong.pos {
+  color: var(--oz-green-deep);
+}
+
+.goals-stat-grid strong.neg {
+  color: var(--oz-danger);
+}
+
+.goals-bars {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.goals-bar-row {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr auto;
+  gap: 0.55rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.goals-bar-track {
+  position: relative;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--oz-ink) 8%, transparent);
+  overflow: hidden;
+}
+
+.goals-bar-target {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--oz-ink) 14%, transparent);
+}
+
+.goals-bar-saved {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #fab005;
+}
+
+.goals-bar-saved.is-met {
+  background: var(--oz-green-deep);
+}
+
+.goals-chart-wrap {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.goals-chart-hit {
+  position: relative;
+  cursor: crosshair;
+}
+
+.goals-chart-tooltip {
+  position: absolute;
+  top: 0.35rem;
+  z-index: 2;
+  min-width: 9.5rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--oz-border);
+  background: var(--oz-surface);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--oz-ink) 16%, transparent);
+  display: grid;
+  gap: 0.15rem;
+  pointer-events: none;
+  font-size: 0.78rem;
+  color: #868e96;
+}
+
+.goals-chart-tooltip strong {
+  color: var(--oz-ink);
+  font-size: 0.85rem;
+}
+
+.goals-chart-tooltip .pos {
+  color: var(--oz-green-deep);
+}
+
+.goals-chart-tooltip .neg {
+  color: var(--oz-danger);
+}
+
+.goals-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  font-size: 0.82rem;
+  color: #868e96;
+}
+
+.goals-chart-legend strong {
+  color: var(--oz-ink);
+  font-weight: 700;
+}
+
+.goals-chart {
+  width: 100%;
+  height: auto;
+  color: var(--oz-green-deep);
+}
+
+.goals-chart-axis {
+  fill: #868e96;
+  font-size: 9px;
+}
+
+.goals-hero-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.goals-hero-metric strong {
+  font-size: 2.1rem;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.goals-hero-metric span {
+  font-size: 0.9rem;
+  color: #868e96;
+}
+
+.goals-hero-track {
+  height: 0.65rem;
+}
+
+.goals-hero-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.92rem;
+}
+
+.goals-hero-foot {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #868e96;
+}
+
+.goals-chip-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.goals-chip {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--oz-ink) 4%, transparent);
+}
+
+.goals-chip span {
+  font-size: 0.72rem;
+  color: #868e96;
+}
+
+.goals-chip strong {
+  font-size: 0.95rem;
+}
+
+.goals-chip strong.pos {
+  color: var(--oz-green-deep);
+}
+
+.goals-details {
+  border-top: 1px dashed var(--oz-border);
+  padding-top: 0.65rem;
+}
+
+.goals-details summary {
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #868e96;
+}
+
+.goals-details[open] summary {
+  margin-bottom: 0.65rem;
+}
+
+.goals-embedded {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.65rem 0;
+  border-top: 1px dashed var(--oz-border);
+}
+
+.goals-embedded:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.goals-embedded h2 {
+  font-size: 0.95rem !important;
+}
+
+.goals-inline-hint {
+  margin: 0;
+}
+
+.goals-goal-date {
+  font-size: 0.82rem;
+  color: #868e96;
+  white-space: nowrap;
+}
+
+.goals-stat-grid-compact {
+  margin-bottom: 0.25rem;
+}
+
+@media (max-width: 720px) {
+  .goals-chip-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.goals-required-monthly {
+  color: var(--oz-ink) !important;
+}
+
+.goals-required-monthly strong {
+  color: var(--oz-green-deep);
+}
+
+.goals-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.goals-goal {
+  display: grid;
+  gap: 0.45rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed var(--oz-border);
+}
+
+.goals-goal:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.goals-goal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.goals-goal-head > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.goals-pace {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #868e96;
+}
+
+.goals-pace.is-ahead,
+.goals-pace.is-done {
+  color: var(--oz-green-deep);
+}
+
+.goals-pace.is-behind {
+  color: var(--oz-danger);
+}
+
+.goals-progress-track {
+  height: 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--oz-ink) 8%, transparent);
+  overflow: hidden;
+}
+
+.goals-progress-fill {
+  height: 100%;
+  background: var(--oz-green-deep);
+}
+
+.goals-goal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+  font-size: 0.82rem;
+  color: #868e96;
+}
+
+.goals-goal-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+@media (max-width: 720px) {
+  .goals-stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .goals-bar-row {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+}
+
+html[data-theme='dark'] .goals-card {
+  background: var(--oz-surface);
+}

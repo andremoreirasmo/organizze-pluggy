@@ -7,6 +7,7 @@ import { BottomSheet } from './BottomSheet'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CustomRecurringView } from './CustomRecurringView'
 import { DashboardView } from './DashboardView'
+import { GoalsView } from './GoalsView'
 import { PullToRefresh } from './PullToRefresh'
 import { ReconciliationView } from './ReconciliationView'
 import {
@@ -127,6 +128,7 @@ function initialVisitedViews(view: View): Record<View, boolean> {
     reconcile: true,
     balances: view === 'balances',
     recurring: view === 'recurring',
+    goals: view === 'goals',
     dashboard: view === 'dashboard',
     settings: view === 'settings',
   }
@@ -470,6 +472,7 @@ function App() {
     reconcile: 0,
     balances: 0,
     recurring: 0,
+    goals: 0,
     dashboard: 0,
     settings: 0,
   })
@@ -507,6 +510,7 @@ function App() {
         reconcile: true,
         balances: false,
         recurring: false,
+        goals: false,
         dashboard: false,
         settings: false,
       })
@@ -821,6 +825,10 @@ function App() {
 
   const openRecurring = useCallback(() => {
     navigateToView('recurring')
+  }, [navigateToView])
+
+  const openGoals = useCallback(() => {
+    navigateToView('goals')
   }, [navigateToView])
 
   const openDashboard = useCallback(() => {
@@ -1253,6 +1261,7 @@ function App() {
       reconcile: true,
       balances: false,
       recurring: false,
+      goals: false,
       dashboard: false,
       settings: false,
     })
@@ -1360,6 +1369,7 @@ function App() {
         onReconcile={openReconcile}
         onBalances={openBalances}
         onRecurring={openRecurring}
+        onGoals={openGoals}
         onDashboard={openDashboard}
         onSettings={() => void openSettings()}
         onLogout={() => void logout()}
@@ -1401,6 +1411,16 @@ function App() {
               apiFetch={authenticatedFetch}
               onError={setError}
             />
+          </div>
+        ) : null}
+
+        {visitedViews.goals ? (
+          <div
+            className="view-pane"
+            hidden={view !== 'goals'}
+            aria-hidden={view !== 'goals'}
+          >
+            <GoalsView apiFetch={authenticatedFetch} onError={setError} />
           </div>
         ) : null}
 

@@ -10,6 +10,7 @@ type Props = {
   onReconcile: () => void
   onBalances: () => void
   onRecurring: () => void
+  onGoals: () => void
   onDashboard: () => void
   onSettings: () => void
   onLogout: () => void
@@ -24,6 +25,7 @@ export function AppChrome({
   onReconcile,
   onBalances,
   onRecurring,
+  onGoals,
   onDashboard,
   onSettings,
   onLogout,
@@ -137,6 +139,14 @@ export function AppChrome({
           </button>
           <button
             type="button"
+            className={`btn ghost ${view === 'goals' ? 'active-nav' : ''}`}
+            onClick={onGoals}
+          >
+            <span className="nav-label-full">Metas</span>
+            <span className="nav-label-short">Metas</span>
+          </button>
+          <button
+            type="button"
             className={`btn ghost ${view === 'dashboard' ? 'active-nav' : ''}`}
             onClick={onDashboard}
           >
@@ -237,6 +247,13 @@ export function AppChrome({
               onClick={() => go(onRecurring)}
             >
               Recorrências
+            </button>
+            <button
+              type="button"
+              className={`mobile-nav-link ${view === 'goals' ? 'is-active' : ''}`}
+              onClick={() => go(onGoals)}
+            >
+              Metas
             </button>
             <button
               type="button"

@@ -119,3 +119,57 @@ model CustomRecurringOccurrence {
   @@unique([seriesId, index])
   @@index([seriesId])
 }
+
+enum SavingsGoalStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+}
+
+enum GoalLedgerKind {
+  CONTRIBUTION
+  REALLOCATION
+  ADJUSTMENT
+}
+
+/// User prefs for %-of-income savings targets (single row).
+model GoalsPreference {
+  id                      String   @id @default("default")
+  minPct                  Float    @default(30)
+  primaryPct              Float    @default(35)
+  idealPct                Float    @default(40)
+  /// Category ids treated as investment contributions (not consumption).
+  investmentCategoryIds   Json     @default("[]")
+  estimatedUsdBrl         Float?
+  updatedAt               DateTime @updatedAt
+}
+
+model SavingsGoal {
+  id                         String            @id @default(cuid())
+  name                       String
+  targetCents                Int
+  allocatedCents             Int               @default(0)
+  targetDate                 DateTime?         @db.Date
+  priority                   Int               @default(100)
+  monthlyContributionCents   Int?
+  monthlyContributionPct     Float?
+  status                     SavingsGoalStatus @default(ACTIVE)
+  createdAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
+  ledger                     GoalLedgerEntry[]
+
+  @@index([status, priority])
+}
+
+model GoalLedgerEntry {
+  id          String         @id @default(cuid())
+  goalId      String
+  date        DateTime       @db.Date
+  amountCents Int
+  kind        GoalLedgerKind
+  note        String?
+  createdAt   DateTime       @default(now())
+  goal        SavingsGoal    @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId, date])
+}

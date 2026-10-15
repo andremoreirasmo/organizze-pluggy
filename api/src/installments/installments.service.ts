@@ -12,10 +12,11 @@ import type {
   InstallmentsOverviewResponse,
 } from './installments.types';
 
-const LOOKBACK_MONTHS = 24;
-const LOOKAHEAD_MONTHS = 24;
-/** Max invoices to hydrate per card (≈ monthly bills). */
-const MAX_INVOICES_PER_CARD = 24;
+/** Keep the chart window covered without drowning Organizze in invoice GETs. */
+const LOOKBACK_MONTHS = 12;
+const LOOKAHEAD_MONTHS = 12;
+/** Max invoices to hydrate per card when not skipped by the caller. */
+const MAX_INVOICES_PER_CARD = 8;
 
 function pad2(value: number): string {
   return String(value).padStart(2, '0');
@@ -509,7 +510,18 @@ export class InstallmentsService {
     private readonly settings: SettingsService,
   ) {}
 
-  async getOverview(focusMonth?: string): Promise<InstallmentsOverviewResponse> {
+  async getOverview(
+    focusMonth?: string,
+    options?: {
+      /** Reuse txs already loaded by the caller (e.g. goals overview). */
+      preloadedTransactions?: OrganizzeTransaction[];
+      /**
+       * Skip per-invoice hydration (dozens of GETs). Prefer when a covering
+       * transaction list already includes card installment launches.
+       */
+      skipInvoiceHydration?: boolean;
+    },
+  ): Promise<InstallmentsOverviewResponse> {
     const chartAnchor = currentMonthKeySaoPaulo();
     const requested =
       focusMonth && /^\d{4}-\d{2}$/.test(focusMonth) ? focusMonth : chartAnchor;
@@ -529,6 +541,7 @@ export class InstallmentsService {
     const transactions = await this.loadInstallmentTransactions(
       chartAnchor,
       cards,
+      options,
     );
     this.logger.log(
       `Installments pool: ${transactions.length} txs (anchor=${chartAnchor})`,
@@ -625,26 +638,47 @@ export class InstallmentsService {
   private async loadInstallmentTransactions(
     focus: string,
     cards: Array<{ id: number }>,
+    options?: {
+      preloadedTransactions?: OrganizzeTransaction[];
+      skipInvoiceHydration?: boolean;
+    },
   ): Promise<OrganizzeTransaction[]> {
     const focusStart = monthStartIso(focus);
     const startDate = shiftIsoMonths(focusStart, -LOOKBACK_MONTHS);
     const endDate = shiftIsoMonths(focusStart, LOOKAHEAD_MONTHS);
     const byId = new Map<number, OrganizzeTransaction>();
 
-    try {
-      const all = await this.organizze.listTransactions({
-        startDate,
-        endDate,
-      });
-      for (const tx of all) {
+    const preloaded = options?.preloadedTransactions;
+    if (preloaded && preloaded.length > 0) {
+      for (const tx of preloaded) {
         if (this.isInstallmentCandidate(tx)) {
           byId.set(tx.id, tx);
         }
       }
-    } catch (error) {
-      this.logger.warn(
-        `Could not list Organizze transactions for installments: ${String(error)}`,
+      this.logger.log(
+        `Installments reused ${byId.size} preloaded installment txs (skipInvoice=${Boolean(options?.skipInvoiceHydration)})`,
       );
+    } else {
+      try {
+        // Covering avoids the 500-row truncation of a single wide /transactions call.
+        const all = await this.organizze.listTransactionsCovering({
+          startDate,
+          endDate,
+        });
+        for (const tx of all) {
+          if (this.isInstallmentCandidate(tx)) {
+            byId.set(tx.id, tx);
+          }
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Could not list Organizze transactions for installments: ${String(error)}`,
+        );
+      }
+    }
+
+    if (options?.skipInvoiceHydration) {
+      return [...byId.values()];
     }
 
     await Promise.all(
