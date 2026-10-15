@@ -1,12 +1,13 @@
 import {
-  buildPlannedMonthlyNets,
+  buildOrganizzeMonthlyNets,
   classifyOrganizzeTx,
   computePeriodSavings,
-  estimateAverageMonthlyIncome,
   estimateGoalMonths,
   isTransferLike,
   monthsInclusive,
+  periodSavingsFromCashflow,
   projectWealth,
+  projectWealthAndGoals,
   requiredMonthlyForGoal,
   toGoalProgress,
   weeklySaveTargetCents,
@@ -42,7 +43,7 @@ describe('goals-savings.calc', () => {
     expect(period.savedCents).toBe(0);
   });
 
-  it('excludes credit-card invoice payments from consumption', () => {
+  it('does not double-count fatura when card purchase + invoice payment exist (tx fallback)', () => {
     const cats = new Map<number, string>([
       [1, 'Salário'],
       [2, 'Pagamento de fatura'],
@@ -85,21 +86,51 @@ describe('goals-savings.calc', () => {
         credit_card_id: null,
         category_id: 2,
         description: 'Pagamento de fatura',
+        paid_credit_card_id: 9,
+      },
+      cats,
+      new Set(),
+    );
+    const faturaLabel = classifyOrganizzeTx(
+      {
+        id: 4,
+        date: '2026-10-05',
+        paid: false,
+        amount_cents: -677_930,
+        account_id: 1,
+        credit_card_id: null,
+        category_id: 2,
+        description: 'Fatura Novembro 2026',
       },
       cats,
       new Set(),
     );
     expect(invoicePay.isInvoicePayment).toBe(true);
+    expect(faturaLabel.isInvoicePayment).toBe(true);
     const period = computePeriodSavings(
-      [income, cardPurchase, invoicePay],
+      [income, cardPurchase, invoicePay, faturaLabel],
       { minPct: 30, primaryPct: 35, idealPct: 40 },
       () => true,
     );
+    // Only the card purchase counts — invoice lines are excluded.
     expect(period.consumptionPaidCents).toBe(200_000);
     expect(period.savedCents).toBe(800_000);
   });
 
-  it('counts unpaid launches as efetivado for analysis', () => {
+  it('builds period savings from Organizze /balances totals', () => {
+    const period = periodSavingsFromCashflow(2_154_930, 1_338_775, {
+      minPct: 20,
+      primaryPct: 30,
+      idealPct: 40,
+    });
+    expect(period.incomePaidCents).toBe(2_154_930);
+    expect(period.consumptionPaidCents).toBe(1_338_775);
+    expect(period.savedCents).toBe(2_154_930 - 1_338_775);
+    expect(period.targetPrimaryCents).toBe(Math.round(2_154_930 * 0.3));
+    expect(period.investmentContribPaidCents).toBe(0);
+  });
+
+  it('treats unpaid Organizze launches as efetivado', () => {
     const cats = new Map<number, string>([[1, 'Salário']]);
     const unpaidIncome = classifyOrganizzeTx(
       {
@@ -138,7 +169,7 @@ describe('goals-savings.calc', () => {
     expect(period.savedCents).toBe(370_000);
   });
 
-  it('counts investment contribution as savings, not consumption', () => {
+  it('counts investment contributions as expense in tx fallback', () => {
     const cats = new Map<number, string>([
       [1, 'Salário'],
       [2, 'Aplicação CDB'],
@@ -188,10 +219,47 @@ describe('goals-savings.calc', () => {
       () => true,
     );
     expect(period.incomePaidCents).toBe(1_800_000);
-    expect(period.consumptionPaidCents).toBe(100_000);
-    expect(period.investmentContribPaidCents).toBe(400_000);
-    expect(period.savedCents).toBe(2_100_000);
+    expect(period.consumptionPaidCents).toBe(500_000);
+    expect(period.investmentContribPaidCents).toBe(0);
+    expect(period.savedCents).toBe(1_300_000);
     expect(period.targetPrimaryCents).toBe(630_000);
+  });
+
+  it('allows negative realized savings', () => {
+    const cats = new Map<number, string>([[1, 'Salário']]);
+    const period = computePeriodSavings(
+      [
+        classifyOrganizzeTx(
+          {
+            id: 1,
+            date: '2026-10-01',
+            paid: true,
+            amount_cents: 100_000,
+            account_id: 1,
+            credit_card_id: null,
+            category_id: 1,
+          },
+          cats,
+          new Set(),
+        ),
+        classifyOrganizzeTx(
+          {
+            id: 2,
+            date: '2026-10-02',
+            paid: true,
+            amount_cents: -250_000,
+            account_id: 1,
+            credit_card_id: null,
+            category_id: 9,
+          },
+          cats,
+          new Set(),
+        ),
+      ],
+      { minPct: 30, primaryPct: 35, idealPct: 40 },
+      () => true,
+    );
+    expect(period.savedCents).toBe(-150_000);
   });
 
   it('allocates goals without double-counting capital', () => {
@@ -272,7 +340,7 @@ describe('goals-savings.calc', () => {
       },
       '2027-12',
       '2026-10',
-      required,
+      0,
     );
     expect(onTrack.pace).toBe('on_track');
   });
@@ -290,18 +358,17 @@ describe('goals-savings.calc', () => {
     expect(points[0].wealthCents).toBe(100_000);
     expect(points[1].wealthCents).toBe(110_000);
     expect(points[2].wealthCents).toBe(105_000);
-    expect(points[2].availableCents).toBe(65_000);
   });
 
-  it('plans monthly nets from primary % of average income', () => {
+  it('builds monthly nets only from Organizze launches (no invented income)', () => {
     const cats = new Map<number, string>([[1, 'Salário']]);
-    const txs = [8, 9].flatMap((month, idx) => [
+    const txs = [
       classifyOrganizzeTx(
         {
-          id: idx * 2 + 1,
-          date: `2026-0${month}-05`,
+          id: 1,
+          date: '2026-10-05',
           paid: true,
-          amount_cents: 1_800_000,
+          amount_cents: 450_000,
           account_id: 1,
           credit_card_id: null,
           category_id: 1,
@@ -309,58 +376,126 @@ describe('goals-savings.calc', () => {
         cats,
         new Set(),
       ),
-    ]);
-    const avg = estimateAverageMonthlyIncome(txs, '2026-10', 3);
-    expect(avg).toBe(1_800_000);
-    const nets = buildPlannedMonthlyNets({
+      classifyOrganizzeTx(
+        {
+          id: 2,
+          date: '2026-10-06',
+          paid: true,
+          amount_cents: -100_000,
+          account_id: 1,
+          credit_card_id: null,
+          category_id: 9,
+        },
+        cats,
+        new Set(),
+      ),
+      classifyOrganizzeTx(
+        {
+          id: 3,
+          date: '2026-11-02',
+          paid: false,
+          amount_cents: 430_000,
+          account_id: 1,
+          credit_card_id: null,
+          category_id: 1,
+        },
+        cats,
+        new Set(),
+      ),
+    ];
+    const nets = buildOrganizzeMonthlyNets({
       txs,
-      installmentByMonth: new Map([['2026-10', 50_000]]),
+      installmentByMonth: new Map([['2026-12', 50_000]]),
       fromYm: '2026-10',
       horizon: 3,
-      avgMonthlyIncomeCents: avg,
-      primaryPct: 35,
     });
-    // Parcels within spend budget do not reduce the planned 35% save.
-    expect(nets[0]).toBe(630_000);
-    expect(nets[1]).toBe(630_000);
-    expect(nets[2]).toBe(630_000);
-    expect(weeklySaveTargetCents(1_800_000, 35)).toBe(
-      Math.round(630_000 / (52 / 12)),
-    );
+    expect(nets[0]).toBe(350_000);
+    expect(nets[1]).toBe(430_000);
+    // No Oz consumption in Dec → parcels only
+    expect(nets[2]).toBe(-50_000);
+    expect(weeklySaveTargetCents(450_000, 30)).toBe(135_000);
   });
 
-  it('keeps projection flat when there is no income baseline', () => {
-    const nets = buildPlannedMonthlyNets({
-      txs: [],
-      installmentByMonth: new Map([['2026-10', 200_000]]),
-      fromYm: '2026-10',
-      horizon: 4,
-      avgMonthlyIncomeCents: 0,
-      primaryPct: 35,
-    });
-    expect(nets).toEqual([0, 0, 0, 0]);
-  });
-
-  it('applies free cash before monthly contributions on goal ETA', () => {
-    const etas = estimateGoalMonths({
-      goals: [
+  it('does not add parcels when month already has consumption txs', () => {
+    const cats = new Map<number, string>([[1, 'Salário']]);
+    const txs = [
+      classifyOrganizzeTx(
         {
-          id: 'land',
-          name: 'Terreno',
-          targetCents: 1_000_000,
-          allocatedCents: 0,
-          targetDate: '2027-12-01',
-          priority: 1,
-          monthlyContributionCents: null,
-          monthlyContributionPct: null,
-          status: 'ACTIVE',
+          id: 1,
+          date: '2026-10-01',
+          paid: true,
+          amount_cents: 500_000,
+          account_id: 1,
+          credit_card_id: null,
+          category_id: 1,
         },
-      ],
-      monthlySpareCents: 100_000,
-      startYm: '2026-10',
-      horizonMonths: 24,
-      initialBonusCents: 900_000,
+        cats,
+        new Set(),
+      ),
+      classifyOrganizzeTx(
+        {
+          id: 2,
+          date: '2026-10-02',
+          paid: true,
+          amount_cents: -80_000,
+          account_id: null,
+          credit_card_id: 3,
+          category_id: 9,
+          description: 'Parcela loja',
+        },
+        cats,
+        new Set(),
+      ),
+    ];
+    const nets = buildOrganizzeMonthlyNets({
+      txs,
+      installmentByMonth: new Map([['2026-10', 80_000]]),
+      fromYm: '2026-10',
+      horizon: 1,
     });
-    expect(etas.get('land')).toBe('2026-10');
+    expect(nets[0]).toBe(420_000);
+  });
+
+  it('keeps goal ETA consistent with wealth projection available balance', () => {
+    const goals = [
+      {
+        id: 'reserve',
+        name: 'Reserva',
+        targetCents: 5_000_000,
+        allocatedCents: 5_000_000,
+        targetDate: null,
+        priority: 1,
+        monthlyContributionCents: null,
+        monthlyContributionPct: null,
+        status: 'ACTIVE' as const,
+      },
+      {
+        id: 'land',
+        name: 'Terreno',
+        targetCents: 10_000_000,
+        allocatedCents: 0,
+        targetDate: '2027-12-01',
+        priority: 2,
+        monthlyContributionCents: null,
+        monthlyContributionPct: null,
+        status: 'ACTIVE' as const,
+      },
+    ];
+    const monthlyNets = Array.from({ length: 24 }, () => 800_000);
+    const { points, goalEta } = projectWealthAndGoals({
+      startYm: '2026-10',
+      startWealthCents: 5_890_773,
+      startAllocatedCents: 5_000_000,
+      goals,
+      monthlyNets,
+      horizon: 24,
+    });
+    expect(goalEta.get('land')).toBeTruthy();
+    const eta = goalEta.get('land')!;
+    const atEta = points.find((p) => p.monthKey === eta);
+    expect(atEta).toBeTruthy();
+    // Emergency stays allocated; land reaches target without sharing that 50k.
+    expect(atEta!.allocatedCents).toBeGreaterThanOrEqual(15_000_000);
+    expect(atEta!.wealthCents).toBeGreaterThanOrEqual(atEta!.allocatedCents);
   });
 });

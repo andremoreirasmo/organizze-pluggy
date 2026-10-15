@@ -15,15 +15,11 @@ import { PrismaService } from '../prisma/prisma.module';
 import {
   buildAlerts,
   buildInstallmentHints,
-  buildPlannedMonthlyNets,
   clampPct,
   classifyOrganizzeTx,
-  computePeriodSavings,
-  estimateAverageMonthlyIncome,
-  estimateGoalMonths,
-  inMonth,
-  inYear,
-  projectWealth,
+  largestIncomeLaunchInMonth,
+  periodSavingsFromCashflow,
+  projectWealthAndGoals,
   shiftMonthKey,
   spendableThisMonthCents,
   toGoalProgress,
@@ -61,6 +57,13 @@ function todayIsoSaoPaulo(): string {
 
 function yearStartEnd(year: number): { start: string; end: string } {
   return { start: `${year}-01-01`, end: `${year}-12-31` };
+}
+
+function lastDayOfMonth(yearMonth: string): string {
+  const y = Number(yearMonth.slice(0, 4));
+  const m = Number(yearMonth.slice(5, 7));
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return `${yearMonth}-${String(last).padStart(2, '0')}`;
 }
 
 function idsFromJson(value: Prisma.JsonValue): number[] {
@@ -268,25 +271,38 @@ export class GoalsService {
     const settings = this.toSettings(prefs);
     const investIds = new Set(settings.investmentCategoryIds);
 
-    // Keep the Organizze window tight — very wide ranges can return empty/truncated
-    // payloads. Projection beyond +3 months uses the income average, not txs.
-    const historyStart = `${shiftMonthKey(month, -8)}-01`;
-    const nearTermEnd = `${shiftMonthKey(month, 3)}-28`;
+    // Cashflow from Organizze /balances (not tx sums — avoids fatura double-count).
+    const horizon = 24;
+    const monthStart = `${month}-01`;
+    const monthEnd = lastDayOfMonth(month);
     const { start: yearStart } = yearStartEnd(year);
-    const fetchStart = historyStart < yearStart ? historyStart : yearStart;
+    const projectionEnd = lastDayOfMonth(shiftMonthKey(month, horizon - 1));
+    // Weekly target still needs the largest paycheck launch in the month.
+    const txWindowEnd = monthEnd;
 
-    // One covering txs fetch; parcels/snapshot reuse cached Organizze GETs and
-    // do not refetch the same transaction window (or fan out invoices).
-    const [transactions, categories, goals] = await Promise.all([
-      this.organizze.listTransactionsCovering({
-        startDate: fetchStart,
-        endDate: nearTermEnd,
-      }),
-      this.organizze.listCategories(),
-      this.prisma.savingsGoal.findMany({
-        orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
-      }),
-    ]);
+    const [yearCashflow, monthlyCashflows, transactions, categories, goals] =
+      await Promise.all([
+        this.organizze.getPeriodCashflow({
+          startDate: yearStart,
+          endDate: monthEnd,
+        }),
+        this.organizze.getMonthlyCashflows({
+          startDate: monthStart,
+          endDate: projectionEnd,
+        }),
+        this.organizze.listTransactionsCovering({
+          startDate: monthStart,
+          endDate: txWindowEnd,
+        }),
+        this.organizze.listCategories(),
+        this.prisma.savingsGoal.findMany({
+          orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+        }),
+      ]);
+    const monthCashflow = monthlyCashflows.get(month) ?? {
+      incomeCents: 0,
+      expenseCents: 0,
+    };
 
     const [snapshot, installmentOverview] = await Promise.all([
       this.balances.getSnapshot().catch(() => null),
@@ -310,12 +326,16 @@ export class GoalsService {
       primaryPct: settings.primaryPct,
       idealPct: settings.idealPct,
     };
-    const monthSavings = computePeriodSavings(classified, targets, (tx) =>
-      inMonth(tx.date, month),
+    const monthSavings = periodSavingsFromCashflow(
+      monthCashflow.incomeCents,
+      monthCashflow.expenseCents,
+      targets,
     );
-    // Acumulado = Jan → mês selecionado (não o resto do ano ainda não vivido).
-    const yearSavings = computePeriodSavings(classified, targets, (tx) =>
-      inYear(tx.date, year) && tx.date.slice(0, 7) <= month,
+    // Acumulado = Jan → mês selecionado (via /balances).
+    const yearSavings = periodSavingsFromCashflow(
+      yearCashflow.incomeCents,
+      yearCashflow.expenseCents,
+      targets,
     );
 
     // Investments are already booked as Organizze accounts — do not add Pluggy again.
@@ -349,26 +369,13 @@ export class GoalsService {
       }
     }
 
-    let avgMonthlyIncomeCents = estimateAverageMonthlyIncome(
-      classified,
-      month,
-      3,
-    );
-    if (avgMonthlyIncomeCents <= 0 && yearSavings.incomePaidCents > 0) {
-      const monthIndex = Number(month.slice(5, 7));
-      const monthsElapsed = Math.max(1, monthIndex);
-      avgMonthlyIncomeCents = Math.round(
-        yearSavings.incomePaidCents / monthsElapsed,
-      );
-    }
-    if (avgMonthlyIncomeCents <= 0) {
-      avgMonthlyIncomeCents = monthSavings.incomePaidCents;
-    }
+    // Month figures from Organizze /balances only (no historical average).
+    const monthIncomeOzCents = monthCashflow.incomeCents;
     const plannedMonthlySaveCents = Math.round(
-      (avgMonthlyIncomeCents * settings.primaryPct) / 100,
+      (monthIncomeOzCents * settings.primaryPct) / 100,
     );
     const weeklyTarget = weeklySaveTargetCents(
-      avgMonthlyIncomeCents,
+      largestIncomeLaunchInMonth(classified, month),
       settings.primaryPct,
     );
 
@@ -379,38 +386,34 @@ export class GoalsService {
       primaryPct: settings.primaryPct,
     });
 
-    const etas = estimateGoalMonths({
-      goals: goalInputs,
-      monthlySpareCents: plannedMonthlySaveCents,
+    const monthlyNets: number[] = [];
+    for (let i = 0; i < horizon; i += 1) {
+      const ym = shiftMonthKey(month, i);
+      const cf = monthlyCashflows.get(ym);
+      if (cf) {
+        monthlyNets.push(cf.incomeCents - cf.expenseCents);
+        continue;
+      }
+      // Empty Oz month: fall back to installment commitment only.
+      monthlyNets.push(-(installmentByMonth.get(ym) ?? 0));
+    }
+    const { points: projection, goalEta } = projectWealthAndGoals({
       startYm: month,
-      horizonMonths: 60,
-      initialBonusCents: availableCents,
+      startWealthCents: netWorthCents,
+      startAllocatedCents: totalAllocatedCents,
+      goals: goalInputs,
+      monthlyNets,
+      horizon,
     });
+
     const goalViews = goalInputs.map((g) =>
       toGoalProgress(
         g,
-        etas.get(g.id) ?? null,
+        goalEta.get(g.id) ?? null,
         month,
         plannedMonthlySaveCents,
       ),
     );
-
-    const horizon = 24;
-    const monthlyNets = buildPlannedMonthlyNets({
-      txs: classified,
-      installmentByMonth,
-      fromYm: month,
-      horizon,
-      avgMonthlyIncomeCents,
-      primaryPct: settings.primaryPct,
-    });
-    const projection = projectWealth({
-      startYm: month,
-      startWealthCents: netWorthCents,
-      startAllocatedCents: totalAllocatedCents,
-      monthlyNets,
-      horizon,
-    });
 
     const installmentHints = buildInstallmentHints(installmentByMonth, month);
     const alerts = buildAlerts({
@@ -423,9 +426,7 @@ export class GoalsService {
     });
 
     const projectionNote =
-      avgMonthlyIncomeCents > 0
-        ? `Projeção assume ${settings.primaryPct}% da renda média (~${(avgMonthlyIncomeCents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}/mês), ajustada por despesas e parcelas previstas. Não inclui rendimento de investimentos.`
-        : 'Sem renda média recente para projetar — cadastre receitas no Organizze.';
+      'Receita/despesa vêm do /balances do Organizze (igual à UI). Projeção usa o fluxo mensal do Oz; meses vazios só caem parcelas. Alocação a objetivos é virtual.';
 
     return {
       monthKey: month,
@@ -441,7 +442,7 @@ export class GoalsService {
       projection,
       alerts: alerts.slice(0, 6),
       averageMonthlySpareCents: plannedMonthlySaveCents,
-      avgMonthlyIncomeCents,
+      avgMonthlyIncomeCents: monthIncomeOzCents,
       plannedMonthlySaveCents,
       weeklySaveTargetCents: weeklyTarget,
       spendableCents,

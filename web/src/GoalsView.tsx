@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { BottomSheet } from './BottomSheet'
 import { ConfirmDialog } from './ConfirmDialog'
 import { PullToRefresh } from './PullToRefresh'
@@ -10,6 +20,7 @@ import {
   resolveYearMonth,
   ROUTES,
 } from './routes'
+import { useTheme } from './useTheme'
 
 type ApiFetch = <T>(path: string, init?: RequestInit) => Promise<T>
 
@@ -96,11 +107,35 @@ function currentMonthKeySaoPaulo(): string {
     .slice(0, 7)
 }
 
+const GOALS_HIDE_AMOUNTS_KEY = 'goals.hideAmounts'
+const HIDDEN_MONEY = 'R$ •••'
+
 function formatBRL(amountCents: number): string {
   return (amountCents / 100).toLocaleString('pt-BR', {
     style: 'currency',
     currency: 'BRL',
   })
+}
+
+/** Display money, or a mask when privacy mode is on. */
+function money(amountCents: number, hideAmounts: boolean): string {
+  return hideAmounts ? HIDDEN_MONEY : formatBRL(amountCents)
+}
+
+function readHideAmounts(): boolean {
+  try {
+    return localStorage.getItem(GOALS_HIDE_AMOUNTS_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeHideAmounts(hide: boolean): void {
+  try {
+    localStorage.setItem(GOALS_HIDE_AMOUNTS_KEY, hide ? '1' : '0')
+  } catch {
+    // ignore
+  }
 }
 
 function formatMonthTitle(monthKey: string): string {
@@ -165,6 +200,10 @@ function formatBrlInputFromDigits(raw: string): string {
   })
 }
 
+function centsToBrlInput(cents: number): string {
+  return formatBrlInputFromDigits(String(Math.max(0, Math.round(cents))))
+}
+
 function formatSignedBrlInputFromDigits(raw: string): string {
   const trimmed = raw.trim()
   const negative =
@@ -216,7 +255,11 @@ function formatMonthShort(monthKey: string): string {
   return label.replace(' de ', '/').replace('.', '')
 }
 
-function paceReason(goal: GoalProgress, plannedMonthlySaveCents: number): string {
+function paceReason(
+  goal: GoalProgress,
+  plannedMonthlySaveCents: number,
+  hideAmounts: boolean,
+): string {
   if (goal.pace === 'done') {
     return 'Meta concluída'
   }
@@ -226,6 +269,13 @@ function paceReason(goal: GoalProgress, plannedMonthlySaveCents: number): string
       : 'Sem data-alvo'
   }
   const req = goal.requiredMonthlyCents
+  if (hideAmounts) {
+    return goal.estimatedMonth
+      ? `Previsão ${formatMonthShort(goal.estimatedMonth)}`
+      : plannedMonthlySaveCents >= req
+        ? 'No ritmo do necessário/mês'
+        : 'Abaixo do necessário/mês'
+  }
   if (plannedMonthlySaveCents >= req) {
     return `Planejado ${formatBRL(plannedMonthlySaveCents)}/mês ≥ ${formatBRL(req)} necessários`
   }
@@ -235,206 +285,184 @@ function paceReason(goal: GoalProgress, plannedMonthlySaveCents: number): string
   return `Precisa ${formatBRL(req)}/mês · planejado ${formatBRL(plannedMonthlySaveCents)}`
 }
 
+type ProjectionChartRow = {
+  monthKey: string
+  label: string
+  wealth: number
+  wealthCents: number
+  netCents: number
+  availableCents: number
+}
+
+function ProjectionTooltip({
+  active,
+  payload,
+  hideAmounts = false,
+}: {
+  active?: boolean
+  payload?: Array<{ payload: ProjectionChartRow }>
+  hideAmounts?: boolean
+}) {
+  if (!active || !payload?.[0]) {
+    return null
+  }
+  const row = payload[0].payload
+  return (
+    <div className="chart-tooltip">
+      <strong>{row.label}</strong>
+      <span>Patrimônio {money(row.wealthCents, hideAmounts)}</span>
+      {row.netCents !== 0 ? (
+        <span className={row.netCents >= 0 ? 'pos' : 'neg'}>
+          {row.netCents >= 0 ? '+' : ''}
+          {money(row.netCents, hideAmounts)} no mês
+        </span>
+      ) : (
+        <span>Ponto de partida</span>
+      )}
+      <span>Livre {money(row.availableCents, hideAmounts)}</span>
+    </div>
+  )
+}
+
 function ProjectionChart({
   points,
   targetMonthKey,
+  hideAmounts,
 }: {
   points: ProjectionPoint[]
   targetMonthKey?: string | null
+  hideAmounts: boolean
 }) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const { resolved: theme } = useTheme()
+  const isDark = theme === 'dark'
+  const colors = isDark
+    ? {
+        line: '#69db7c',
+        fill: 'rgba(105, 219, 124, 0.18)',
+        tick: '#9aa19a',
+        grid: 'rgba(255, 255, 255, 0.08)',
+        target: '#ff6b6b',
+      }
+    : {
+        line: '#2f9e44',
+        fill: 'rgba(47, 158, 68, 0.12)',
+        tick: '#868e96',
+        grid: 'rgba(0, 0, 0, 0.08)',
+        target: '#e03131',
+      }
+
+  const data = useMemo<ProjectionChartRow[]>(
+    () =>
+      points.map((p) => ({
+        monthKey: p.monthKey,
+        label: formatMonthShort(p.monthKey),
+        wealth: p.wealthCents / 100,
+        wealthCents: p.wealthCents,
+        netCents: p.netCents,
+        availableCents: p.availableCents,
+      })),
+    [points],
+  )
 
   if (points.length === 0) {
-    return null
+    return (
+      <p className="field-hint">Sem pontos de projeção para exibir.</p>
+    )
   }
-  const width = 640
-  const height = 168
-  const padL = 44
-  const padR = 12
-  const padT = 12
-  const padB = 28
-  const wealths = points.map((p) => p.wealthCents)
-  const minW = Math.min(...wealths)
-  const maxW = Math.max(...wealths)
-  const span = Math.max(1, maxW - minW)
-  const innerW = width - padL - padR
-  const innerH = height - padT - padB
-  const coords = points.map((p, i) => {
-    const x =
-      padL + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW)
-    const y = padT + innerH - ((p.wealthCents - minW) / span) * innerH
-    return { x, y, p }
-  })
-  const line = coords.map((c, i) => `${i === 0 ? 'M' : 'L'}${c.x},${c.y}`).join(' ')
-  const labelIdx = new Set<number>()
-  const step = Math.max(1, Math.floor((points.length - 1) / 5))
-  for (let i = 0; i < points.length; i += step) {
-    labelIdx.add(i)
-  }
-  labelIdx.add(points.length - 1)
-  if (targetMonthKey) {
-    const ti = points.findIndex((p) => p.monthKey === targetMonthKey)
-    if (ti >= 0) {
-      labelIdx.add(ti)
-    }
-  }
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => minW + span * t)
-  const hover = hoverIdx != null ? coords[hoverIdx] : null
-  const tipLeftPct = hover ? (hover.x / width) * 100 : 0
 
-  const nearestIndex = (clientX: number, rect: DOMRect): number => {
-    const x = ((clientX - rect.left) / rect.width) * width
-    let best = 0
-    let bestDist = Infinity
-    for (let i = 0; i < coords.length; i += 1) {
-      const dist = Math.abs(coords[i].x - x)
-      if (dist < bestDist) {
-        bestDist = dist
-        best = i
-      }
-    }
-    return best
-  }
+  const first = points[0]
+  const last = points[points.length - 1]
+  const delta = last.wealthCents - first.wealthCents
+  const wealths = points.map((p) => p.wealthCents / 100)
+  const rawMin = Math.min(...wealths)
+  const rawMax = Math.max(...wealths)
+  const pad =
+    rawMax === rawMin
+      ? Math.max(1_000, Math.abs(rawMax) * 0.08)
+      : Math.max(1, (rawMax - rawMin) * 0.08)
+  const yDomain: [number, number] = [rawMin - pad, rawMax + pad]
+  const hasTarget =
+    targetMonthKey != null &&
+    points.some((p) => p.monthKey === targetMonthKey)
 
   return (
     <div className="goals-chart-wrap">
+      <div className="goals-chart-legend">
+        <span>
+          {formatMonthShort(first.monthKey)}{' '}
+          <strong>{money(first.wealthCents, hideAmounts)}</strong>
+        </span>
+        <span>
+          {formatMonthShort(last.monthKey)}{' '}
+          <strong>{money(last.wealthCents, hideAmounts)}</strong>
+        </span>
+        <span className={delta >= 0 ? 'pos' : 'neg'}>
+          {delta >= 0 ? '+' : ''}
+          {money(delta, hideAmounts)}
+        </span>
+      </div>
       <div
-        className="goals-chart-hit"
-        onMouseLeave={() => setHoverIdx(null)}
-        onMouseMove={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect()
-          setHoverIdx(nearestIndex(e.clientX, rect))
-        }}
+        className="goals-chart-canvas"
+        role="img"
+        aria-label="Projeção de patrimônio"
       >
-        <svg
-          className="goals-chart"
-          viewBox={`0 0 ${width} ${height}`}
-          role="img"
-          aria-label="Projeção de patrimônio"
-        >
-          {yTicks.map((tick) => {
-            const y = padT + innerH - ((tick - minW) / span) * innerH
-            return (
-              <g key={tick}>
-                <line
-                  x1={padL}
-                  x2={width - padR}
-                  y1={y}
-                  y2={y}
-                  stroke="currentColor"
-                  strokeOpacity={0.12}
-                />
-                <text
-                  className="goals-chart-axis"
-                  x={padL - 6}
-                  y={y + 3}
-                  textAnchor="end"
-                >
-                  {formatCompactBRL(tick)}
-                </text>
-              </g>
-            )
-          })}
-          <path
-            d={line}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.2}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-          {hover ? (
-            <line
-              x1={hover.x}
-              x2={hover.x}
-              y1={padT}
-              y2={padT + innerH}
-              stroke="currentColor"
-              strokeOpacity={0.35}
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart
+            data={data}
+            margin={{ top: 10, right: 8, left: 0, bottom: 0 }}
+          >
+            <CartesianGrid
+              stroke={colors.grid}
+              vertical={false}
               strokeDasharray="3 3"
             />
-          ) : null}
-          {coords.map(({ x, y, p }, i) => {
-            const isTarget =
-              targetMonthKey != null && p.monthKey === targetMonthKey
-            const isHover = hoverIdx === i
-            return (
-              <circle
-                key={p.monthKey}
-                cx={x}
-                cy={y}
-                r={isHover ? 5 : isTarget ? 4.5 : 2.5}
-                fill={
-                  isTarget
-                    ? 'var(--oz-danger)'
-                    : isHover
-                      ? 'var(--oz-ink)'
-                      : 'currentColor'
-                }
+            <XAxis
+              dataKey="monthKey"
+              tickFormatter={(value: string) => formatMonthShort(value)}
+              axisLine={false}
+              tickLine={false}
+              minTickGap={28}
+              tick={{ fill: colors.tick, fontSize: 11 }}
+            />
+            <YAxis
+              domain={yDomain}
+              width={58}
+              axisLine={false}
+              tickLine={false}
+              tick={{ fill: colors.tick, fontSize: 11 }}
+              tickFormatter={(value: number) =>
+                hideAmounts
+                  ? '•••'
+                  : formatCompactBRL(Math.round(value * 100))
+              }
+            />
+            <Tooltip
+              cursor={{ stroke: colors.line, strokeOpacity: 0.35 }}
+              content={<ProjectionTooltip hideAmounts={hideAmounts} />}
+              wrapperStyle={{ outline: 'none', zIndex: 8 }}
+            />
+            {hasTarget && targetMonthKey ? (
+              <ReferenceLine
+                x={targetMonthKey}
+                stroke={colors.target}
+                strokeOpacity={0.55}
+                strokeDasharray="4 3"
               />
-            )
-          })}
-          {[...labelIdx].map((i) => {
-            const { x, p } = coords[i]
-            return (
-              <text
-                key={`lbl-${p.monthKey}`}
-                className="goals-chart-axis"
-                x={x}
-                y={height - 8}
-                textAnchor="middle"
-              >
-                {formatMonthShort(p.monthKey)}
-              </text>
-            )
-          })}
-          {targetMonthKey
-            ? (() => {
-                const c = coords.find((c) => c.p.monthKey === targetMonthKey)
-                if (!c) {
-                  return null
-                }
-                return (
-                  <line
-                    x1={c.x}
-                    x2={c.x}
-                    y1={padT}
-                    y2={padT + innerH}
-                    stroke="var(--oz-danger)"
-                    strokeOpacity={0.45}
-                    strokeDasharray="4 3"
-                  />
-                )
-              })()
-            : null}
-        </svg>
-        {hover ? (
-          <div
-            className="goals-chart-tooltip"
-            style={{
-              left: `${tipLeftPct}%`,
-              transform:
-                tipLeftPct > 78
-                  ? 'translate(-100%, -100%)'
-                  : tipLeftPct < 22
-                    ? 'translate(0, -100%)'
-                    : 'translate(-50%, -100%)',
-            }}
-          >
-            <strong>{formatMonthShort(hover.p.monthKey)}</strong>
-            <span>Patrimônio {formatBRL(hover.p.wealthCents)}</span>
-            {hover.p.netCents !== 0 ? (
-              <span className={hover.p.netCents >= 0 ? 'pos' : 'neg'}>
-                {hover.p.netCents >= 0 ? '+' : ''}
-                {formatBRL(hover.p.netCents)} no mês
-              </span>
-            ) : (
-              <span>Ponto de partida</span>
-            )}
-            <span>Livre {formatBRL(hover.p.availableCents)}</span>
-          </div>
-        ) : null}
+            ) : null}
+            <Area
+              type="monotone"
+              dataKey="wealth"
+              stroke={colors.line}
+              fill={colors.fill}
+              strokeWidth={2.4}
+              dot={{ r: 2.6, fill: colors.line, strokeWidth: 0 }}
+              activeDot={{ r: 5.5, fill: colors.line, strokeWidth: 0 }}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
       </div>
+      <p className="goals-chart-hint">Passe o mouse para ver cada mês</p>
     </div>
   )
 }
@@ -442,41 +470,51 @@ function ProjectionChart({
 function TargetBars({
   period,
   settings,
+  hideAmounts,
 }: {
   period: PeriodSavings
   settings: GoalsSettings
+  hideAmounts: boolean
 }) {
-  const max = Math.max(
-    period.targetIdealCents,
-    period.savedCents,
-    period.incomePaidCents > 0 ? 1 : 0,
-    1,
-  )
+  // Each row = progress toward that tier (saved / target), not a shared income axis.
+  const saved = Math.max(0, period.savedCents)
   const rows = [
     { label: `Mín. ${settings.minPct}%`, cents: period.targetMinCents },
-    { label: `Principal ${settings.primaryPct}%`, cents: period.targetPrimaryCents },
+    {
+      label: `Principal ${settings.primaryPct}%`,
+      cents: period.targetPrimaryCents,
+    },
     { label: `Ideal ${settings.idealPct}%`, cents: period.targetIdealCents },
   ]
   return (
     <div className="goals-bars">
-      {rows.map((row) => (
-        <div key={row.label} className="goals-bar-row">
-          <span>{row.label}</span>
-          <div className="goals-bar-track">
+      {rows.map((row) => {
+        const target = Math.max(1, row.cents)
+        const progressPct = Math.min(100, (saved / target) * 100)
+        const met = period.savedCents >= row.cents
+        return (
+          <div key={row.label} className="goals-bar-row">
+            <span>{row.label}</span>
             <div
-              className="goals-bar-target"
-              style={{ width: `${Math.min(100, (row.cents / max) * 100)}%` }}
-            />
-            <div
-              className={`goals-bar-saved ${period.savedCents >= row.cents ? 'is-met' : ''}`}
-              style={{
-                width: `${Math.min(100, (Math.max(0, period.savedCents) / max) * 100)}%`,
-              }}
-            />
+              className="goals-bar-track"
+              title={
+                hideAmounts
+                  ? `${progressPct.toFixed(0)}% da meta`
+                  : `Sobra ${formatBRL(period.savedCents)} · ${progressPct.toFixed(0)}% da meta ${formatBRL(row.cents)}`
+              }
+            >
+              <div
+                className={`goals-bar-saved${met ? ' is-met' : ''}`}
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+            <strong>
+              {met ? 'ok' : `${progressPct.toFixed(0)}%`}
+              {hideAmounts ? null : ` · ${formatBRL(row.cents)}`}
+            </strong>
           </div>
-          <strong>{formatBRL(row.cents)}</strong>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -488,6 +526,7 @@ function CashflowSummary({
   showBars,
   onAdjustPct,
   embedded,
+  hideAmounts,
 }: {
   title: string
   period: PeriodSavings
@@ -495,6 +534,7 @@ function CashflowSummary({
   showBars?: boolean
   onAdjustPct?: () => void
   embedded?: boolean
+  hideAmounts: boolean
 }) {
   const hasIncome = period.incomePaidCents > 0
   const isSurplus = period.savedCents >= 0
@@ -511,43 +551,46 @@ function CashflowSummary({
       </div>
       {!hasIncome ? (
         <p className="field-hint">
-          Ainda não há renda neste período no Organizze. As metas % aparecem
-          quando há salário/receita lançada (pago ou não).
+          Ainda não há renda neste período no Organizze.
         </p>
       ) : null}
       <div className="goals-stat-grid">
         <div>
           <span>Renda</span>
-          <strong>{formatBRL(period.incomePaidCents)}</strong>
-          <small>Todos os lançamentos do período</small>
+          <strong>{money(period.incomePaidCents, hideAmounts)}</strong>
+          <small>Receita prevista do Organizze</small>
         </div>
         <div>
           <span>Gastos</span>
           <strong className="neg">
-            {formatBRL(period.consumptionPaidCents)}
+            {money(period.consumptionPaidCents, hideAmounts)}
           </strong>
-          <small>
-            {period.investmentContribPaidCents > 0
-              ? `+ ${formatBRL(period.investmentContribPaidCents)} em aportes (contam como economia)`
-              : 'Sem transferências internas'}
-          </small>
+          <small>Despesa prevista do Organizze</small>
         </div>
         <div>
           <span>{isSurplus ? 'Sobra' : 'Déficit'}</span>
           <strong className={isSurplus ? 'pos' : 'neg'}>
-            {formatBRL(period.savedCents)}
+            {money(period.savedCents, hideAmounts)}
           </strong>
           <small>
             {!hasIncome
               ? '—'
               : isSurplus
-                ? `${period.savedPct?.toFixed(1) ?? '0'}% da renda · meta ${settings.primaryPct}% = ${formatBRL(period.targetPrimaryCents)}`
-                : `Gastou mais que a renda · meta era ${formatBRL(period.targetPrimaryCents)}`}
+                ? hideAmounts
+                  ? `${period.savedPct?.toFixed(1) ?? '0'}% da renda · meta ${settings.primaryPct}%`
+                  : `${period.savedPct?.toFixed(1) ?? '0'}% da renda · meta ${settings.primaryPct}% = ${formatBRL(period.targetPrimaryCents)}`
+                : hideAmounts
+                  ? 'Gastou mais que a renda'
+                  : `Gastou mais que a renda · meta era ${formatBRL(period.targetPrimaryCents)}`}
           </small>
         </div>
       </div>
       {showBars && hasIncome ? (
-        <TargetBars period={period} settings={settings} />
+        <TargetBars
+          period={period}
+          settings={settings}
+          hideAmounts={hideAmounts}
+        />
       ) : null}
     </Tag>
   )
@@ -566,7 +609,15 @@ export function GoalsView({ apiFetch, onError }: Props) {
   )
   const [overview, setOverview] = useState<GoalsOverview | null>(null)
   const [loading, setLoading] = useState(false)
-  const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  const [hideAmounts, setHideAmounts] = useState(readHideAmounts)
+
+  const toggleHideAmounts = () => {
+    setHideAmounts((current) => {
+      const next = !current
+      writeHideAmounts(next)
+      return next
+    })
+  }
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [minPct, setMinPct] = useState('30')
@@ -575,6 +626,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
   const [savingSettings, setSavingSettings] = useState(false)
 
   const [goalFormOpen, setGoalFormOpen] = useState(false)
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null)
   const [goalName, setGoalName] = useState('')
   const [goalTarget, setGoalTarget] = useState('')
   const [goalAllocated, setGoalAllocated] = useState('')
@@ -616,7 +668,6 @@ export function GoalsView({ apiFetch, onError }: Props) {
       if (!options?.silent) {
         onError(null)
         setLoading(true)
-        setStatusMessage('Carregando metas…')
       }
       try {
         const data = await apiFetch<GoalsOverview>(
@@ -629,25 +680,16 @@ export function GoalsView({ apiFetch, onError }: Props) {
             data.plannedMonthlySaveCents ?? data.averageMonthlySpareCents ?? 0,
           weeklySaveTargetCents: data.weeklySaveTargetCents ?? 0,
           spendableCents: data.spendableCents ?? 0,
+          projection: Array.isArray(data.projection) ? data.projection : [],
           projectionNote:
             data.projectionNote ??
-            'Projeção com base na economia planejada e nos lançamentos previstos.',
+            'Projeção com base nos lançamentos do Organizze.',
         })
         setMinPct(String(data.settings.minPct))
         setPrimaryPct(String(data.settings.primaryPct))
         setIdealPct(String(data.settings.idealPct))
-        if (!options?.silent) {
-          setStatusMessage(
-            data.month.incomePaidCents === 0
-              ? 'Sem renda lançada neste mês ainda.'
-              : `Economia do mês: ${data.month.savedPct?.toFixed(1) ?? '—'}%.`,
-          )
-        }
       } catch (err) {
         onError(err instanceof Error ? err.message : 'Erro ao carregar metas')
-        if (!options?.silent) {
-          setStatusMessage(null)
-        }
         throw err
       } finally {
         if (!options?.silent) {
@@ -706,7 +748,6 @@ export function GoalsView({ apiFetch, onError }: Props) {
       })
       setSettingsOpen(false)
       await load(month, { silent: true })
-      setStatusMessage('Metas percentuais atualizadas.')
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Erro ao salvar metas %')
     } finally {
@@ -715,12 +756,31 @@ export function GoalsView({ apiFetch, onError }: Props) {
   }
 
   const openCreateGoal = () => {
+    setEditingGoalId(null)
     setGoalName('')
     setGoalTarget('')
     setGoalAllocated('')
     setGoalDate('')
     setGoalPriority('100')
     setGoalFormOpen(true)
+  }
+
+  const openEditGoal = (goal: GoalProgress) => {
+    setEditingGoalId(goal.id)
+    setGoalName(goal.name)
+    setGoalTarget(centsToBrlInput(goal.targetCents))
+    setGoalAllocated(centsToBrlInput(goal.allocatedCents))
+    setGoalDate(goal.targetDate?.slice(0, 10) ?? '')
+    setGoalPriority(String(goal.priority))
+    setGoalFormOpen(true)
+  }
+
+  const closeGoalForm = () => {
+    if (savingGoal) {
+      return
+    }
+    setGoalFormOpen(false)
+    setEditingGoalId(null)
   }
 
   const submitGoal = async () => {
@@ -734,25 +794,45 @@ export function GoalsView({ apiFetch, onError }: Props) {
       onError('Informe o valor da meta')
       return
     }
-    const allocatedCents = parseUnsignedBRLInputToCents(goalAllocated) ?? 0
     setSavingGoal(true)
     onError(null)
     try {
-      await apiFetch('/api/goals', {
-        method: 'POST',
-        body: JSON.stringify({
-          name,
-          targetCents,
-          allocatedCents,
-          targetDate: goalDate || null,
-          priority: Number(goalPriority) || 100,
-        }),
-      })
-      setGoalFormOpen(false)
-      await load(month, { silent: true })
-      setStatusMessage(`Objetivo “${name}” criado.`)
+      if (editingGoalId) {
+        await apiFetch(`/api/goals/${editingGoalId}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            name,
+            targetCents,
+            targetDate: goalDate || null,
+            priority: Number(goalPriority) || 100,
+          }),
+        })
+        setGoalFormOpen(false)
+        setEditingGoalId(null)
+        await load(month, { silent: true })
+      } else {
+        const allocatedCents = parseUnsignedBRLInputToCents(goalAllocated) ?? 0
+        await apiFetch('/api/goals', {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            targetCents,
+            allocatedCents,
+            targetDate: goalDate || null,
+            priority: Number(goalPriority) || 100,
+          }),
+        })
+        setGoalFormOpen(false)
+        await load(month, { silent: true })
+      }
     } catch (err) {
-      onError(err instanceof Error ? err.message : 'Erro ao criar objetivo')
+      onError(
+        err instanceof Error
+          ? err.message
+          : editingGoalId
+            ? 'Erro ao atualizar objetivo'
+            : 'Erro ao criar objetivo',
+      )
     } finally {
       setSavingGoal(false)
     }
@@ -776,7 +856,6 @@ export function GoalsView({ apiFetch, onError }: Props) {
       })
       setAllocateGoal(null)
       await load(month, { silent: true })
-      setStatusMessage(`Alocação em “${allocateGoal.name}” atualizada.`)
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Erro ao alocar')
     } finally {
@@ -794,7 +873,6 @@ export function GoalsView({ apiFetch, onError }: Props) {
       await apiFetch(`/api/goals/${deleteGoal.id}`, { method: 'DELETE' })
       setDeleteGoal(null)
       await load(month, { silent: true })
-      setStatusMessage(`Objetivo “${deleteGoal.name}” removido.`)
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Erro ao apagar objetivo')
     } finally {
@@ -841,14 +919,60 @@ export function GoalsView({ apiFetch, onError }: Props) {
                   ›
                 </button>
               </div>
-              <button
-                type="button"
-                className="reports-refresh"
-                disabled={loading}
-                onClick={() => void load(month)}
-              >
-                {loading ? 'Atualizando…' : 'Atualizar'}
-              </button>
+              <div className="goals-header-actions">
+                <button
+                  type="button"
+                  className="goals-privacy-btn"
+                  title={hideAmounts ? 'Mostrar valores' : 'Ocultar valores'}
+                  aria-label={
+                    hideAmounts ? 'Mostrar valores' : 'Ocultar valores'
+                  }
+                  aria-pressed={hideAmounts}
+                  onClick={toggleHideAmounts}
+                >
+                  {hideAmounts ? (
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="20"
+                      height="20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                      <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>
+                  ) : (
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="20"
+                      height="20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="reports-refresh"
+                  disabled={loading}
+                  onClick={() => void load(month)}
+                >
+                  {loading ? 'Atualizando…' : 'Atualizar'}
+                </button>
+              </div>
             </div>
             <p className="settings-header-copy">
               Quanto da renda você está guardando e se está no ritmo dos
@@ -857,16 +981,6 @@ export function GoalsView({ apiFetch, onError }: Props) {
           </header>
 
           <div className="reports-body goals-body">
-            {statusMessage || loading ? (
-              <div
-                className={`status-banner ${loading ? 'busy' : ''}`}
-                role="status"
-              >
-                {loading ? <span className="spinner" aria-hidden /> : null}
-                <span>{statusMessage}</span>
-              </div>
-            ) : null}
-
             {!overview && loading ? (
               <div className="empty loading-empty">
                 <span className="spinner lg" aria-hidden />
@@ -874,14 +988,6 @@ export function GoalsView({ apiFetch, onError }: Props) {
               </div>
             ) : overview ? (
               <>
-                {overview.alerts.length > 0 ? (
-                  <ul className="goals-alerts">
-                    {overview.alerts.map((alert) => (
-                      <li key={alert}>{alert}</li>
-                    ))}
-                  </ul>
-                ) : null}
-
                 <section className="goals-card goals-hero">
                   <div className="goals-card-head">
                     <h2>Economia do mês</h2>
@@ -895,8 +1001,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
                   </div>
                   {overview.month.incomePaidCents <= 0 ? (
                     <p className="field-hint">
-                      Ainda não há renda neste mês no Organizze. As metas %
-                      aparecem quando há salário/receita lançada.
+                      Ainda não há renda neste mês no Organizze.
                     </p>
                   ) : (
                     <>
@@ -938,42 +1043,42 @@ export function GoalsView({ apiFetch, onError }: Props) {
                               overview.month.savedCents >= 0 ? 'pos' : 'neg'
                             }
                           >
-                            {formatBRL(overview.month.savedCents)}
+                            {money(overview.month.savedCents, hideAmounts)}
                           </strong>
                         </span>
                         <span>
                           Meta:{' '}
                           <strong>
-                            {formatBRL(overview.month.targetPrimaryCents)}
+                            {money(
+                              overview.month.targetPrimaryCents,
+                              hideAmounts,
+                            )}
                           </strong>
                         </span>
                       </div>
                       <p className="goals-hero-foot">
                         {overview.month.gapPrimaryCents > 0
-                          ? `Faltam ${formatBRL(overview.month.gapPrimaryCents)} para a meta deste mês`
-                          : overview.month.incomePaidCents > 0
-                            ? 'Meta principal do mês alcançada'
-                            : 'Aguardando renda lançada neste mês'}
+                          ? hideAmounts
+                            ? 'Ainda falta para a meta deste mês'
+                            : `Faltam ${formatBRL(overview.month.gapPrimaryCents)} para a meta deste mês`
+                          : 'Meta principal do mês alcançada'}
                       </p>
                     </>
                   )}
                   <div className="goals-chip-row">
                     <div className="goals-chip">
-                      <span>Por recebimento (~semanal)</span>
-                      <strong>
-                        {formatBRL(overview.weeklySaveTargetCents)}
-                      </strong>
-                    </div>
-                    <div className="goals-chip">
                       <span>Disponível p/ gastar</span>
                       <strong className="pos">
-                        {formatBRL(overview.spendableCents)}
+                        {money(overview.spendableCents, hideAmounts)}
                       </strong>
                     </div>
                     <div className="goals-chip">
                       <span>Renda do mês</span>
                       <strong>
-                        {formatBRL(overview.month.incomePaidCents)}
+                        {money(
+                          overview.month.incomePaidCents,
+                          hideAmounts,
+                        )}
                       </strong>
                     </div>
                   </div>
@@ -985,19 +1090,23 @@ export function GoalsView({ apiFetch, onError }: Props) {
                       settings={overview.settings}
                       showBars
                       embedded
+                      hideAmounts={hideAmounts}
                     />
                     <CashflowSummary
                       title={`Ano ${overview.year} · jan–${formatMonthShort(overview.monthKey)}`}
                       period={overview.yearToDate}
                       settings={overview.settings}
                       embedded
+                      hideAmounts={hideAmounts}
                     />
                     <p className="field-hint">
-                      Fluxo do período (renda − consumo). Pagamentos de fatura
-                      não entram de novo — a compra no cartão já contou.
+                      Renda e gastos vêm do resumo do Organizze no período (não
+                      somamos lançamentos — evita duplicar fatura).
                       {overview.yearToDate.savedCents < 0 &&
                       overview.month.savedCents >= 0
-                        ? ` Resultado negativo no ano não apaga a capacidade atual (~${formatBRL(overview.plannedMonthlySaveCents)}/mês com ${overview.settings.primaryPct}%).`
+                        ? hideAmounts
+                          ? ` Resultado negativo no ano não apaga a capacidade atual (meta ${overview.settings.primaryPct}%).`
+                          : ` Resultado negativo no ano não apaga a capacidade atual (~${formatBRL(overview.plannedMonthlySaveCents)}/mês com ${overview.settings.primaryPct}%).`
                         : ''}
                     </p>
                   </details>
@@ -1015,9 +1124,9 @@ export function GoalsView({ apiFetch, onError }: Props) {
                     </button>
                   </div>
                   <p className="field-hint goals-inline-hint">
-                    Livre para alocar: {formatBRL(overview.availableCents)} ·
-                    economia planejada {formatBRL(overview.plannedMonthlySaveCents)}
-                    /mês (sem tocar no que já está alocado).
+                    {hideAmounts
+                      ? 'Economia planejada oculta · alocações não se misturam entre metas.'
+                      : `Livre para alocar: ${formatBRL(overview.availableCents)} · economia planejada ${formatBRL(overview.plannedMonthlySaveCents)}/mês (sem tocar no que já está alocado).`}
                   </p>
                   {overview.goals.length === 0 ? (
                     <div className="empty">
@@ -1045,9 +1154,17 @@ export function GoalsView({ apiFetch, onError }: Props) {
                           </div>
                           <div className="goals-hero-row">
                             <span>
-                              <strong>{formatBRL(goal.allocatedCents)}</strong>
-                              {' de '}
-                              {formatBRL(goal.targetCents)}
+                              {hideAmounts ? (
+                                'Progresso da meta'
+                              ) : (
+                                <>
+                                  <strong>
+                                    {formatBRL(goal.allocatedCents)}
+                                  </strong>
+                                  {' de '}
+                                  {formatBRL(goal.targetCents)}
+                                </>
+                              )}
                             </span>
                             <span>{goal.progressPct.toFixed(0)}%</span>
                           </div>
@@ -1064,6 +1181,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
                               {paceReason(
                                 goal,
                                 overview.plannedMonthlySaveCents,
+                                hideAmounts,
                               )}
                             </span>
                             {goal.estimatedMonth && goal.pace !== 'done' ? (
@@ -1080,29 +1198,72 @@ export function GoalsView({ apiFetch, onError }: Props) {
                             goal.monthsRemaining > 0 &&
                             goal.pace !== 'done' ? (
                               <span>
-                                Guardar {formatBRL(goal.requiredMonthlyCents)}
-                                /mês · {goal.monthsRemaining}{' '}
-                                {goal.monthsRemaining === 1 ? 'mês' : 'meses'}
+                                {hideAmounts
+                                  ? `${goal.monthsRemaining} ${goal.monthsRemaining === 1 ? 'mês' : 'meses'} restantes`
+                                  : `Guardar ${formatBRL(goal.requiredMonthlyCents)}/mês · ${goal.monthsRemaining} ${goal.monthsRemaining === 1 ? 'mês' : 'meses'}`}
                               </span>
                             ) : null}
                           </div>
                           <div className="goals-goal-actions">
                             <button
                               type="button"
-                              className="btn ghost"
+                              className="goals-icon-btn"
+                              title="Alocar"
+                              aria-label={`Alocar em ${goal.name}`}
                               onClick={() => {
                                 setAllocateAmount('')
                                 setAllocateGoal(goal)
                               }}
                             >
-                              Alocar
+                              <svg
+                                viewBox="0 0 24 24"
+                                width="18"
+                                height="18"
+                                aria-hidden
+                              >
+                                <path
+                                  fill="currentColor"
+                                  d="M12 3v10.2l3.6-3.6L17 11l-5 5-5-5 1.4-1.4L11 13.2V3h1zm-7 16h14v2H5v-2z"
+                                />
+                              </svg>
                             </button>
                             <button
                               type="button"
-                              className="btn ghost"
+                              className="goals-icon-btn"
+                              title="Editar"
+                              aria-label={`Editar ${goal.name}`}
+                              onClick={() => openEditGoal(goal)}
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                width="18"
+                                height="18"
+                                aria-hidden
+                              >
+                                <path
+                                  fill="currentColor"
+                                  d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+                                />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              className="goals-icon-btn is-danger"
+                              title="Apagar"
+                              aria-label={`Apagar ${goal.name}`}
                               onClick={() => setDeleteGoal(goal)}
                             >
-                              Apagar
+                              <svg
+                                viewBox="0 0 24 24"
+                                width="18"
+                                height="18"
+                                aria-hidden
+                              >
+                                <path
+                                  fill="currentColor"
+                                  d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                                />
+                              </svg>
                             </button>
                           </div>
                         </li>
@@ -1118,21 +1279,26 @@ export function GoalsView({ apiFetch, onError }: Props) {
                   <div className="goals-stat-grid goals-stat-grid-compact">
                     <div>
                       <span>Patrimônio hoje</span>
-                      <strong>{formatBRL(overview.netWorthCents)}</strong>
+                      <strong>
+                        {money(overview.netWorthCents, hideAmounts)}
+                      </strong>
                     </div>
                     <div>
                       <span>Alocado</span>
-                      <strong>{formatBRL(overview.totalAllocatedCents)}</strong>
+                      <strong>
+                        {money(overview.totalAllocatedCents, hideAmounts)}
+                      </strong>
                     </div>
                     <div>
                       <span>Livre</span>
                       <strong className="pos">
-                        {formatBRL(overview.availableCents)}
+                        {money(overview.availableCents, hideAmounts)}
                       </strong>
                     </div>
                   </div>
                   <ProjectionChart
                     points={overview.projection}
+                    hideAmounts={hideAmounts}
                     targetMonthKey={
                       overview.goals.find(
                         (g) =>
@@ -1209,10 +1375,14 @@ export function GoalsView({ apiFetch, onError }: Props) {
 
       {goalFormOpen ? (
         <BottomSheet
-          onClose={() => setGoalFormOpen(false)}
+          onClose={closeGoalForm}
           busy={savingGoal}
-          title="Novo objetivo"
-          subtitle="Alocação é virtual — não move dinheiro entre contas."
+          title={editingGoalId ? 'Editar objetivo' : 'Novo objetivo'}
+          subtitle={
+            editingGoalId
+              ? 'Para mudar o valor já alocado, use o botão de alocar.'
+              : 'Alocação é virtual — não move dinheiro entre contas.'
+          }
         >
           <div className="settings-form modal-body">
             <label>
@@ -1236,18 +1406,26 @@ export function GoalsView({ apiFetch, onError }: Props) {
                 }
               />
             </label>
-            <label>
-              Já alocado (R$)
-              <input
-                value={goalAllocated}
-                disabled={savingGoal}
-                inputMode="numeric"
-                placeholder="0,00"
-                onChange={(e) =>
-                  setGoalAllocated(formatBrlInputFromDigits(e.target.value))
-                }
-              />
-            </label>
+            {editingGoalId ? (
+              <p className="field-hint">
+                Já alocado:{' '}
+                {formatBRL(parseUnsignedBRLInputToCents(goalAllocated) ?? 0)}{' '}
+                (ajuste pelo ícone de alocar)
+              </p>
+            ) : (
+              <label>
+                Já alocado (R$)
+                <input
+                  value={goalAllocated}
+                  disabled={savingGoal}
+                  inputMode="numeric"
+                  placeholder="0,00"
+                  onChange={(e) =>
+                    setGoalAllocated(formatBrlInputFromDigits(e.target.value))
+                  }
+                />
+              </label>
+            )}
             <label>
               Data-alvo (opcional)
               <input
@@ -1272,7 +1450,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
                 type="button"
                 className="btn ghost"
                 disabled={savingGoal}
-                onClick={() => setGoalFormOpen(false)}
+                onClick={closeGoalForm}
               >
                 Cancelar
               </button>
@@ -1282,7 +1460,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
                 disabled={savingGoal}
                 onClick={() => void submitGoal()}
               >
-                Criar
+                {editingGoalId ? 'Salvar' : 'Criar'}
               </button>
             </div>
           </div>

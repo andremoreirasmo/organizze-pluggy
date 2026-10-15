@@ -9,6 +9,25 @@ export type OrganizzeAccount = {
   institutionPrimaryColor?: string | null;
 };
 
+/** One period row inside GET /balances (monetary fields are integers in cents). */
+export type OrganizzeBalancePeriod = {
+  date: string;
+  date_range?: string;
+  outcomes: number;
+  predicted_outcomes?: number;
+  incomes: number;
+  predicted_incomes?: number;
+  expenses: number;
+  predicted_expenses?: number;
+  earnings: number;
+  predicted_earnings?: number;
+  transferences?: number;
+  predicted_transferences?: number;
+  credit_card_invoices_to_pay?: number;
+  balance?: number;
+  predicted_balance?: number;
+};
+
 /** Response from GET /balances (monetary fields are integers in cents). */
 export type OrganizzeBalancesResponse = {
   previous_balance: number;
@@ -16,10 +35,22 @@ export type OrganizzeBalancesResponse = {
   balance: number;
   predicted_balance: number;
   outcomes: number;
+  predicted_outcomes?: number;
   incomes: number;
+  predicted_incomes?: number;
   expenses: number;
+  predicted_expenses?: number;
   earnings: number;
+  predicted_earnings?: number;
   result: number;
+  predicted_result?: number;
+  balances?: OrganizzeBalancePeriod[];
+};
+
+/** Aggregated Oz cashflow for a date range (all launches as efetivado). */
+export type OrganizzePeriodCashflow = {
+  incomeCents: number;
+  expenseCents: number;
 };
 
 export type OrganizzeCategoryKind = 'expenses' | 'earnings' | 'none';

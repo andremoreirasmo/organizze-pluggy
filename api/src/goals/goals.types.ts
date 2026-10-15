@@ -66,11 +66,11 @@ export type GoalsOverviewDto = {
   alerts: string[];
   /** @deprecated Prefer plannedMonthlySaveCents — kept for older clients. */
   averageMonthlySpareCents: number;
-  /** Average paid income used for planning (last months with income). */
+  /** Organizze income in the selected month (all launches as efetivado). */
   avgMonthlyIncomeCents: number;
-  /** Expected monthly savings if primaryPct of avg income is kept. */
+  /** primaryPct of that month's Organizze income. */
   plannedMonthlySaveCents: number;
-  /** Set aside per weekly paycheck to hit primaryPct. */
+  /** primaryPct of the largest income launch in the month. */
   weeklySaveTargetCents: number;
   /** Optional spend left this month without missing primary %. */
   spendableCents: number;

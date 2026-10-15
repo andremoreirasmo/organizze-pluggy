@@ -6,14 +6,21 @@ import {
   CreateOrganizzeTransferPayload,
   CreateOrganizzeTransactionPayload,
   OrganizzeAccount,
+  OrganizzeBalancePeriod,
   OrganizzeBalancesResponse,
   OrganizzeCategory,
   OrganizzeCreditCard,
   OrganizzeInvoice,
+  OrganizzePeriodCashflow,
   OrganizzeTag,
   OrganizzeTransaction,
   UpdateOrganizzeTransactionPayload,
 } from './organizze.types';
+import {
+  cashflowExpenseCents,
+  cashflowIncomeCents,
+  periodMonthKey,
+} from './organizze-cashflow';
 import { TAG_NAME_MAX_LEN } from './organizze-tags';
 import {
   appendPluggyMarker,
@@ -23,7 +30,7 @@ import {
 } from './pluggy-notes';
 
 /** Cap concurrent upstream calls — Organizze/Cloudflare 502 under burst load. */
-const ORGANIZZE_MAX_CONCURRENT = 2;
+const ORGANIZZE_MAX_CONCURRENT = 4;
 const ORGANIZZE_MAX_RETRIES = 4;
 const ORGANIZZE_CACHE_TTL_MS = 5 * 60_000;
 
@@ -326,6 +333,94 @@ export class OrganizzeService {
       );
     }
     return Math.round(response.balance);
+  }
+
+  /**
+   * Account-scoped balances for a range. Prefer this over the global call —
+   * without account_id, Organizze under-reports expenses (omits fatura, etc.).
+   */
+  async getAccountBalances(params: {
+    accountId: number;
+    startDate: string;
+    endDate: string;
+    periodicity?: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  }): Promise<OrganizzeBalancesResponse> {
+    return this.request<OrganizzeBalancesResponse>('/balances', {
+      query: {
+        account_id: params.accountId,
+        start_date: params.startDate,
+        end_date: params.endDate,
+        periodicity: params.periodicity ?? 'monthly',
+      },
+    });
+  }
+
+  /**
+   * Receita/despesa iguais à UI do Organizze no período (pago + previsto).
+   * Soma contas bancárias ativas — não usa lançamentos (evita duplicar fatura).
+   */
+  async getPeriodCashflow(params: {
+    startDate: string;
+    endDate: string;
+  }): Promise<OrganizzePeriodCashflow> {
+    const accounts = await this.listAccounts({ includeArchived: false });
+    const rows = await Promise.all(
+      accounts.map((account) =>
+        this.getAccountBalances({
+          accountId: account.id,
+          startDate: params.startDate,
+          endDate: params.endDate,
+          periodicity: 'monthly',
+        }),
+      ),
+    );
+    let incomeCents = 0;
+    let expenseCents = 0;
+    for (const row of rows) {
+      incomeCents += cashflowIncomeCents(row);
+      expenseCents += cashflowExpenseCents(row);
+    }
+    return { incomeCents, expenseCents };
+  }
+
+  /**
+   * Monthly income/expense nets from Organizze balances (one series per account,
+   * then summed). Keys are `YYYY-MM`.
+   */
+  async getMonthlyCashflows(params: {
+    startDate: string;
+    endDate: string;
+  }): Promise<Map<string, OrganizzePeriodCashflow>> {
+    const accounts = await this.listAccounts({ includeArchived: false });
+    const rows = await Promise.all(
+      accounts.map((account) =>
+        this.getAccountBalances({
+          accountId: account.id,
+          startDate: params.startDate,
+          endDate: params.endDate,
+          periodicity: 'monthly',
+        }),
+      ),
+    );
+    const byMonth = new Map<string, OrganizzePeriodCashflow>();
+    for (const row of rows) {
+      const periods = row.balances ?? [];
+      for (const period of periods) {
+        const monthKey = periodMonthKey(period);
+        if (!monthKey) {
+          continue;
+        }
+        const prev = byMonth.get(monthKey) ?? {
+          incomeCents: 0,
+          expenseCents: 0,
+        };
+        byMonth.set(monthKey, {
+          incomeCents: prev.incomeCents + cashflowIncomeCents(period),
+          expenseCents: prev.expenseCents + cashflowExpenseCents(period),
+        });
+      }
+    }
+    return byMonth;
   }
 
   async listCategories(options?: {

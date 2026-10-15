@@ -20,13 +20,20 @@ export type SavingsTargetsPct = {
 };
 
 export type PeriodSavings = {
-  /** All income in the period (paid flag ignored — treated as efetivado). */
+  /**
+   * Income from Organizze `/balances` (`predicted_incomes`, full period total).
+   */
   incomePaidCents: number;
-  /** Deprecated: always 0; unpaid income is included in incomePaidCents. */
+  /** Always 0; kept for API compat. */
   incomePlannedCents: number;
-  /** All consumption in the period (paid flag ignored). */
+  /**
+   * Expense from Organizze `/balances` (`predicted_expenses`, full period total).
+   * Prefer balances over summing txs (avoids fatura double-count).
+   */
   consumptionPaidCents: number;
+  /** Always 0; kept for API compat. */
   investmentContribPaidCents: number;
+  /** Savings: income − expense. */
   savedCents: number;
   savedPct: number | null;
   targetMinCents: number;
@@ -40,7 +47,7 @@ const INVEST_NAME_RE =
 
 /** Same idea as balances/reconciliation — paying a bill is not new spending. */
 const INVOICE_PAYMENT_RE =
-  /pagamento\s+d[eo]\s+fatura|pagto\.?\s*fatura|pag\.?\s*fatura/i;
+  /pagamento\s+d[eo]\s+fatura|pagto\.?\s*fatura|pag\.?\s*fatura|pagamento.*fatura|^fatura\b/i;
 
 export function isTransferLike(tx: {
   oposite_transaction_id?: number | null;
@@ -85,6 +92,8 @@ export function classifyOrganizzeTx(
     description?: string | null;
     oposite_transaction_id?: number | null;
     oposite_account_id?: number | null;
+    paid_credit_card_id?: number | null;
+    paid_credit_card_invoice_id?: number | null;
   },
   categoryNameById: Map<number, string>,
   investmentCategoryIds: Set<number>,
@@ -96,7 +105,9 @@ export function classifyOrganizzeTx(
   const isInvoicePayment =
     !isTransfer &&
     tx.amount_cents < 0 &&
-    isInvoicePaymentLabel(categoryName, tx.description);
+    (tx.paid_credit_card_id != null ||
+      tx.paid_credit_card_invoice_id != null ||
+      isInvoicePaymentLabel(categoryName, tx.description));
   const isInvestmentContribution =
     !isTransfer &&
     !isInvoicePayment &&
@@ -126,16 +137,49 @@ export function inYear(isoDate: string, year: number): boolean {
   return Number(isoDate.slice(0, 4)) === year;
 }
 
+/**
+ * Preferred path: totals from Organizze GET /balances (no tx summing / fatura dup).
+ */
+export function periodSavingsFromCashflow(
+  incomeCents: number,
+  expenseCents: number,
+  targets: SavingsTargetsPct,
+): PeriodSavings {
+  const incomePaidCents = Math.max(0, Math.round(incomeCents));
+  const consumptionPaidCents = Math.max(0, Math.round(expenseCents));
+  const savedCents = incomePaidCents - consumptionPaidCents;
+  const savedPct =
+    incomePaidCents > 0 ? (savedCents / incomePaidCents) * 100 : null;
+  const targetMinCents = Math.round((incomePaidCents * targets.minPct) / 100);
+  const targetPrimaryCents = Math.round(
+    (incomePaidCents * targets.primaryPct) / 100,
+  );
+  const targetIdealCents = Math.round(
+    (incomePaidCents * targets.idealPct) / 100,
+  );
+  return {
+    incomePaidCents,
+    incomePlannedCents: 0,
+    consumptionPaidCents,
+    investmentContribPaidCents: 0,
+    savedCents,
+    savedPct,
+    targetMinCents,
+    targetPrimaryCents,
+    targetIdealCents,
+    gapPrimaryCents: Math.max(0, targetPrimaryCents - savedCents),
+  };
+}
+
 export function computePeriodSavings(
   txs: ClassifiedTx[],
   targets: SavingsTargetsPct,
   filter: (tx: ClassifiedTx) => boolean,
 ): PeriodSavings {
-  // Treat every matching launch as efetivado (ignore Organizze paid flag) so
-  // planning reflects the full scheduled cashflow, not only what is checked off.
+  // Fallback only — prefer periodSavingsFromCashflow (/balances).
+  // Never count invoice payments together with card purchases.
   let incomePaidCents = 0;
   let consumptionPaidCents = 0;
-  let investmentContribPaidCents = 0;
 
   for (const tx of txs) {
     if (!filter(tx) || tx.isTransfer || tx.isInvoicePayment) {
@@ -146,38 +190,15 @@ export function computePeriodSavings(
       continue;
     }
     if (tx.amountCents < 0) {
-      const abs = Math.abs(tx.amountCents);
-      if (tx.isInvestmentContribution) {
-        investmentContribPaidCents += abs;
-      } else {
-        consumptionPaidCents += abs;
-      }
+      consumptionPaidCents += Math.abs(tx.amountCents);
     }
   }
 
-  const savedCents =
-    incomePaidCents - consumptionPaidCents + investmentContribPaidCents;
-  const savedPct =
-    incomePaidCents > 0 ? (savedCents / incomePaidCents) * 100 : null;
-  const targetMinCents = Math.round((incomePaidCents * targets.minPct) / 100);
-  const targetPrimaryCents = Math.round(
-    (incomePaidCents * targets.primaryPct) / 100,
-  );
-  const targetIdealCents = Math.round((incomePaidCents * targets.idealPct) / 100);
-
-  return {
+  return periodSavingsFromCashflow(
     incomePaidCents,
-    /** Always 0 — unpaid is folded into incomePaidCents for analysis. */
-    incomePlannedCents: 0,
     consumptionPaidCents,
-    investmentContribPaidCents,
-    savedCents,
-    savedPct,
-    targetMinCents,
-    targetPrimaryCents,
-    targetIdealCents,
-    gapPrimaryCents: Math.max(0, targetPrimaryCents - savedCents),
-  };
+    targets,
+  );
 }
 
 export function clampPct(value: number): number {
@@ -284,13 +305,8 @@ export function toGoalProgress(
     pace = 'ahead';
   } else if (monthlySpareCents >= requiredMonthlyCents) {
     pace = 'on_track';
-  } else if (
-    estimatedMonth != null &&
-    estimatedMonth <= targetYm &&
-    monthlySpareCents > 0
-  ) {
-    // ETA hits the date even if average spare is slightly below the flat required rate
-    // (e.g. free cash already available to allocate).
+  } else if (estimatedMonth != null && estimatedMonth <= targetYm) {
+    // Shared projection reaches the target date (includes free cash + Oz nets).
     pace = 'on_track';
   }
 
@@ -398,140 +414,110 @@ function isIncomeTx(tx: ClassifiedTx): boolean {
   );
 }
 
-/** Sum income (paid or not) per month for months ≤ fromYm. */
-export function incomeByMonth(
-  txs: ClassifiedTx[],
-  fromYm: string,
-): Map<string, number> {
-  const byMonth = new Map<string, number>();
-  for (const tx of txs) {
-    if (!isIncomeTx(tx)) {
-      continue;
-    }
-    const ym = tx.date.slice(0, 7);
-    if (ym > fromYm) {
-      continue;
-    }
-    byMonth.set(ym, (byMonth.get(ym) ?? 0) + tx.amountCents);
-  }
-  return byMonth;
-}
-
-/**
- * Average monthly income for planning.
- * Prefers the last `lookback` months that actually had income; falls back to
- * any month in range.
- */
-export function estimateAverageMonthlyIncome(
-  txs: ClassifiedTx[],
-  fromYm: string,
-  lookback = 3,
-): number {
-  const byMonth = incomeByMonth(txs, fromYm);
-  const recent: number[] = [];
-  for (let i = 0; i <= lookback + 5 && recent.length < lookback; i += 1) {
-    const ym = shiftMonthKey(fromYm, -i);
-    const cents = byMonth.get(ym) ?? 0;
-    if (cents > 0) {
-      recent.push(cents);
-    }
-  }
-  if (recent.length > 0) {
-    return Math.round(
-      recent.reduce((sum, value) => sum + value, 0) / recent.length,
-    );
-  }
-
-  const samples = [...byMonth.values()].filter((v) => v > 0);
-  if (samples.length === 0) {
-    return 0;
-  }
-  return Math.round(
-    samples.reduce((sum, value) => sum + value, 0) / samples.length,
+function isConsumptionTx(tx: ClassifiedTx): boolean {
+  // Fallback tx path: skip invoice payments so fatura is not double-counted.
+  return (
+    !tx.isTransfer &&
+    !tx.isInvoicePayment &&
+    tx.amountCents < 0
   );
 }
 
+/** Total Organizze income in a month (paid + scheduled). No averaging. */
+export function organizzeIncomeInMonth(
+  txs: ClassifiedTx[],
+  yearMonth: string,
+): number {
+  return txs
+    .filter((tx) => inMonth(tx.date, yearMonth) && isIncomeTx(tx))
+    .reduce((sum, tx) => sum + tx.amountCents, 0);
+}
+
+/** Total Organizze consumption in a month (paid + scheduled). */
+export function organizzeConsumptionInMonth(
+  txs: ClassifiedTx[],
+  yearMonth: string,
+): number {
+  return txs
+    .filter((tx) => inMonth(tx.date, yearMonth) && isConsumptionTx(tx))
+    .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
+}
+
 /**
- * Planned monthly wealth growth assuming the user keeps saving `primaryPct` of
- * average income. Known unpaid expenses + installments above the spending
- * budget (100% − primaryPct) reduce that capacity.
+ * Monthly wealth nets from Organizze launches only.
+ * Does not invent income for empty months. Installments are used only when
+ * that month has no consumption txs (avoids double-counting card parcels).
  */
-export function buildPlannedMonthlyNets(params: {
+export function buildOrganizzeMonthlyNets(params: {
   txs: ClassifiedTx[];
   installmentByMonth: Map<string, number>;
   fromYm: string;
   horizon: number;
-  avgMonthlyIncomeCents: number;
-  primaryPct: number;
 }): number[] {
-  const {
-    txs,
-    installmentByMonth,
-    fromYm,
-    horizon,
-    avgMonthlyIncomeCents,
-    primaryPct,
-  } = params;
-  const baselineSave = Math.round((avgMonthlyIncomeCents * primaryPct) / 100);
-  const baselineSpend = Math.max(0, avgMonthlyIncomeCents - baselineSave);
   const nets: number[] = [];
-
-  // Without an income baseline, parcel-only months would fake a decline then a
-  // flat line — keep the chart honest (no invented growth or drain).
-  if (avgMonthlyIncomeCents <= 0 && baselineSave <= 0) {
-    return Array.from({ length: horizon }, () => 0);
-  }
-
-  for (let i = 0; i < horizon; i += 1) {
-    const ym = shiftMonthKey(fromYm, i);
-    // Future months: use scheduled launches as efetivado (ignore paid flag).
-    const monthIncome = txs
-      .filter((tx) => inMonth(tx.date, ym) && isIncomeTx(tx))
-      .reduce((sum, tx) => sum + tx.amountCents, 0);
-    const monthExpense = txs
-      .filter(
-        (tx) =>
-          inMonth(tx.date, ym) &&
-          !tx.isTransfer &&
-          !tx.isInvoicePayment &&
-          !tx.isInvestmentContribution &&
-          tx.amountCents < 0,
-      )
-      .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
-    const parcels = installmentByMonth.get(ym) ?? 0;
-
-    // Default path: user keeps saving primaryPct of average income.
-    if (monthIncome === 0 && monthExpense === 0) {
-      // Known installments reduce capacity only when they exceed the spend budget.
-      const overBudget = Math.max(0, parcels - baselineSpend);
-      nets.push(baselineSave - overBudget);
-      continue;
-    }
-
-    const income = monthIncome > 0 ? monthIncome : avgMonthlyIncomeCents;
-    const knownSpend = monthExpense + parcels;
-    const spend =
-      knownSpend > 0 ? Math.max(baselineSpend, knownSpend) : baselineSpend;
+  for (let i = 0; i < params.horizon; i += 1) {
+    const ym = shiftMonthKey(params.fromYm, i);
+    const income = organizzeIncomeInMonth(params.txs, ym);
+    const expense = organizzeConsumptionInMonth(params.txs, ym);
+    const parcels = params.installmentByMonth.get(ym) ?? 0;
+    const spend = expense > 0 ? expense : parcels;
     nets.push(income - spend);
   }
   return nets;
 }
 
-/** Target to set aside from each weekly paycheck (avg monthly × pct / ~4.33). */
+/**
+ * @deprecated Use organizzeIncomeInMonth / buildOrganizzeMonthlyNets.
+ * Kept as a thin alias so older call sites compile during migration.
+ */
+export function estimateAverageMonthlyIncome(
+  txs: ClassifiedTx[],
+  fromYm: string,
+  _lookback = 3,
+): number {
+  return organizzeIncomeInMonth(txs, fromYm);
+}
+
+/** @deprecated Prefer buildOrganizzeMonthlyNets. */
+export function buildPlannedMonthlyNets(params: {
+  txs: ClassifiedTx[];
+  installmentByMonth: Map<string, number>;
+  fromYm: string;
+  horizon: number;
+  avgMonthlyIncomeCents?: number;
+  primaryPct?: number;
+}): number[] {
+  return buildOrganizzeMonthlyNets(params);
+}
+
+/** Target from a single Organizze paycheck × primary %. */
 export function weeklySaveTargetCents(
-  avgMonthlyIncomeCents: number,
+  paycheckCents: number,
   primaryPct: number,
 ): number {
-  if (avgMonthlyIncomeCents <= 0) {
+  if (paycheckCents <= 0) {
     return 0;
   }
-  const monthlySave = Math.round((avgMonthlyIncomeCents * primaryPct) / 100);
-  return Math.round(monthlySave / (52 / 12));
+  return Math.round((paycheckCents * primaryPct) / 100);
+}
+
+/** Largest income launch in the month (typical paycheck when weekly). */
+export function largestIncomeLaunchInMonth(
+  txs: ClassifiedTx[],
+  yearMonth: string,
+): number {
+  let max = 0;
+  for (const tx of txs) {
+    if (inMonth(tx.date, yearMonth) && isIncomeTx(tx)) {
+      max = Math.max(max, tx.amountCents);
+    }
+  }
+  return max;
 }
 
 /**
- * How much can still be spent this month without missing the primary % goal.
- * Income/consumption already treat all launches as efetivado.
+ * Remaining discretionary spend this month vs primary % of realized+scheduled
+ * Organizze income for the month.
  */
 export function spendableThisMonthCents(params: {
   month: PeriodSavings;
@@ -680,6 +666,116 @@ export type ProjectionPoint = {
   scenario: 'base';
 };
 
+export type WealthGoalProjection = {
+  points: ProjectionPoint[];
+  goalEta: Map<string, string | null>;
+};
+
+/**
+ * Single projection path for chart + goal ETAs.
+ * Wealth follows Organizze monthly nets; positive surplus is allocated to active
+ * goals by priority (virtual allocation — does not invent income).
+ */
+export function projectWealthAndGoals(params: {
+  startYm: string;
+  startWealthCents: number;
+  startAllocatedCents: number;
+  goals: GoalProgressInput[];
+  monthlyNets: number[];
+  horizon: number;
+}): WealthGoalProjection {
+  const active = params.goals
+    .filter((g) => g.status === 'ACTIVE')
+    .slice()
+    .sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+
+  const remaining = new Map(
+    active.map((g) => [g.id, Math.max(0, g.targetCents - g.allocatedCents)]),
+  );
+  const goalEta = new Map<string, string | null>();
+  for (const g of active) {
+    if ((remaining.get(g.id) ?? 0) <= 0) {
+      goalEta.set(g.id, params.startYm);
+    }
+  }
+
+  let bookAllocated = Math.max(0, params.startAllocatedCents);
+
+  const applyToGoals = (poolIn: number, ym: string): number => {
+    let pool = Math.max(0, poolIn);
+    for (const g of active) {
+      const left = remaining.get(g.id) ?? 0;
+      if (left <= 0 || pool <= 0) {
+        continue;
+      }
+      let contribution = pool;
+      if (
+        g.monthlyContributionCents != null &&
+        g.monthlyContributionCents > 0
+      ) {
+        contribution = Math.min(pool, g.monthlyContributionCents);
+      } else if (
+        g.monthlyContributionPct != null &&
+        g.monthlyContributionPct > 0
+      ) {
+        contribution = Math.min(
+          pool,
+          Math.round((poolIn * g.monthlyContributionPct) / 100),
+        );
+      }
+      const applied = Math.min(left, contribution);
+      remaining.set(g.id, left - applied);
+      bookAllocated += applied;
+      pool -= applied;
+      if ((remaining.get(g.id) ?? 0) <= 0 && !goalEta.has(g.id)) {
+        goalEta.set(g.id, ym);
+      }
+    }
+    return pool;
+  };
+
+  const points: ProjectionPoint[] = [];
+  let wealth = params.startWealthCents;
+  let freePool = Math.max(0, wealth - bookAllocated);
+
+  freePool = applyToGoals(freePool, params.startYm);
+
+  points.push({
+    monthKey: params.startYm,
+    netCents: 0,
+    wealthCents: wealth,
+    allocatedCents: bookAllocated,
+    availableCents: Math.max(0, wealth - bookAllocated),
+    scenario: 'base',
+  });
+
+  for (let i = 0; i < Math.max(0, params.horizon - 1); i += 1) {
+    const net = params.monthlyNets[i] ?? 0;
+    wealth += net;
+    if (net > 0) {
+      freePool += net;
+    }
+    const ym = shiftMonthKey(params.startYm, i + 1);
+    freePool = applyToGoals(freePool, ym);
+    points.push({
+      monthKey: ym,
+      netCents: net,
+      wealthCents: wealth,
+      allocatedCents: bookAllocated,
+      availableCents: Math.max(0, wealth - bookAllocated),
+      scenario: 'base',
+    });
+  }
+
+  for (const g of active) {
+    if (!goalEta.has(g.id)) {
+      goalEta.set(g.id, null);
+    }
+  }
+
+  return { points, goalEta };
+}
+
 export function projectWealth(params: {
   startYm: string;
   startWealthCents: number;
@@ -687,29 +783,12 @@ export function projectWealth(params: {
   monthlyNets: number[];
   horizon: number;
 }): ProjectionPoint[] {
-  const points: ProjectionPoint[] = [];
-  let wealth = params.startWealthCents;
-  const allocated = params.startAllocatedCents;
-  // Point 0 = patrimônio hoje (matches the KPI). Growth applies from month 1.
-  points.push({
-    monthKey: params.startYm,
-    netCents: 0,
-    wealthCents: wealth,
-    allocatedCents: allocated,
-    availableCents: wealth - allocated,
-    scenario: 'base',
-  });
-  for (let i = 0; i < Math.max(0, params.horizon - 1); i += 1) {
-    const net = params.monthlyNets[i] ?? 0;
-    wealth += net;
-    points.push({
-      monthKey: shiftMonthKey(params.startYm, i + 1),
-      netCents: net,
-      wealthCents: wealth,
-      allocatedCents: allocated,
-      availableCents: wealth - allocated,
-      scenario: 'base',
-    });
-  }
-  return points;
+  return projectWealthAndGoals({
+    startYm: params.startYm,
+    startWealthCents: params.startWealthCents,
+    startAllocatedCents: params.startAllocatedCents,
+    goals: [],
+    monthlyNets: params.monthlyNets,
+    horizon: params.horizon,
+  }).points;
 }
