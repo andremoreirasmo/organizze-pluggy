@@ -18,6 +18,7 @@ import {
   clampPct,
   classifyOrganizzeTx,
   largestIncomeLaunchInMonth,
+  cumulativePrimaryPaceBuffer,
   periodSavingsFromCashflow,
   projectWealthAndGoals,
   shiftMonthKey,
@@ -273,9 +274,12 @@ export class GoalsService {
 
     // Cashflow from Organizze /balances (not tx sums — avoids fatura double-count).
     const horizon = 24;
+    const paceWindowMonths = 12;
     const monthStart = `${month}-01`;
     const monthEnd = lastDayOfMonth(month);
-    const { start: yearStart } = yearStartEnd(year);
+    const { start: yearStart, end: yearEnd } = yearStartEnd(year);
+    const paceWindowStartYm = shiftMonthKey(month, -(paceWindowMonths - 1));
+    const cashflowFetchStart = `${paceWindowStartYm}-01`;
     const projectionEnd = lastDayOfMonth(shiftMonthKey(month, horizon - 1));
     // Weekly target still needs the largest paycheck launch in the month.
     const txWindowEnd = monthEnd;
@@ -284,10 +288,10 @@ export class GoalsService {
       await Promise.all([
         this.organizze.getPeriodCashflow({
           startDate: yearStart,
-          endDate: monthEnd,
+          endDate: yearEnd,
         }),
         this.organizze.getMonthlyCashflows({
-          startDate: monthStart,
+          startDate: cashflowFetchStart,
           endDate: projectionEnd,
         }),
         this.organizze.listTransactionsCovering({
@@ -331,7 +335,7 @@ export class GoalsService {
       monthCashflow.expenseCents,
       targets,
     );
-    // Acumulado = Jan → mês selecionado (via /balances).
+    // Ano calendário completo (jan–dez) via /balances — inclui previsto.
     const yearSavings = periodSavingsFromCashflow(
       yearCashflow.incomeCents,
       yearCashflow.expenseCents,
@@ -379,10 +383,20 @@ export class GoalsService {
       settings.primaryPct,
     );
 
-    const parcelsThisMonth = installmentByMonth.get(month) ?? 0;
-    const spendableCents = spendableThisMonthCents({
-      month: monthSavings,
-      parcelsThisMonthCents: parcelsThisMonth,
+    const spendableCents = spendableThisMonthCents(monthSavings);
+
+    const paceMonths: Array<{ incomeCents: number; expenseCents: number }> =
+      [];
+    for (let i = 0; i < paceWindowMonths; i += 1) {
+      const ym = shiftMonthKey(paceWindowStartYm, i);
+      const cf = monthlyCashflows.get(ym) ?? {
+        incomeCents: 0,
+        expenseCents: 0,
+      };
+      paceMonths.push(cf);
+    }
+    const paceBuffer = cumulativePrimaryPaceBuffer({
+      months: paceMonths,
       primaryPct: settings.primaryPct,
     });
 
@@ -446,6 +460,9 @@ export class GoalsService {
       plannedMonthlySaveCents,
       weeklySaveTargetCents: weeklyTarget,
       spendableCents,
+      paceBufferCents: paceBuffer.bufferCents,
+      paceBufferSavedPct: paceBuffer.savedPct,
+      paceBufferWindowMonths: paceBuffer.windowMonths,
       projectionNote,
     };
   }

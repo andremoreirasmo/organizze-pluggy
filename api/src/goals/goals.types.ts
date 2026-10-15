@@ -74,6 +74,15 @@ export type GoalsOverviewDto = {
   weeklySaveTargetCents: number;
   /** Optional spend left this month without missing primary %. */
   spendableCents: number;
+  /**
+   * Rolling ~12m pace vs primary %: saved − target.
+   * >0 folga acumulada; <0 falta pra recuperar a meta %.
+   */
+  paceBufferCents: number;
+  /** Actual save rate over the pace window (null if no income). */
+  paceBufferSavedPct: number | null;
+  /** How many calendar months entered the pace window (usually 12). */
+  paceBufferWindowMonths: number;
   /** Short explanation of how the chart is built. */
   projectionNote: string;
 };

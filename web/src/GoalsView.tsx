@@ -94,6 +94,9 @@ type GoalsOverview = {
   plannedMonthlySaveCents: number
   weeklySaveTargetCents: number
   spendableCents: number
+  paceBufferCents: number
+  paceBufferSavedPct: number | null
+  paceBufferWindowMonths: number
   projectionNote: string
 }
 
@@ -680,6 +683,12 @@ export function GoalsView({ apiFetch, onError }: Props) {
             data.plannedMonthlySaveCents ?? data.averageMonthlySpareCents ?? 0,
           weeklySaveTargetCents: data.weeklySaveTargetCents ?? 0,
           spendableCents: data.spendableCents ?? 0,
+          paceBufferCents: data.paceBufferCents ?? 0,
+          paceBufferSavedPct:
+            typeof data.paceBufferSavedPct === 'number'
+              ? data.paceBufferSavedPct
+              : null,
+          paceBufferWindowMonths: data.paceBufferWindowMonths ?? 12,
           projection: Array.isArray(data.projection) ? data.projection : [],
           projectionNote:
             data.projectionNote ??
@@ -981,12 +990,17 @@ export function GoalsView({ apiFetch, onError }: Props) {
           </header>
 
           <div className="reports-body goals-body">
-            {!overview && loading ? (
-              <div className="empty loading-empty">
-                <span className="spinner lg" aria-hidden />
-                <p>Carregando…</p>
-              </div>
-            ) : overview ? (
+            <div
+              className={`goals-content${loading ? ' is-loading' : ''}`}
+              aria-busy={loading}
+            >
+              {loading ? (
+                <div className="goals-loading-overlay" role="status">
+                  <span className="spinner lg" aria-hidden />
+                  <p>Carregando…</p>
+                </div>
+              ) : null}
+              {overview ? (
               <>
                 <section className="goals-card goals-hero">
                   <div className="goals-card-head">
@@ -1067,16 +1081,47 @@ export function GoalsView({ apiFetch, onError }: Props) {
                   )}
                   <div className="goals-chip-row">
                     <div className="goals-chip">
-                      <span>Disponível p/ gastar</span>
+                      <span>Disponível no mês</span>
                       <strong className="pos">
                         {money(overview.spendableCents, hideAmounts)}
                       </strong>
+                      <small>sem furar a meta {overview.settings.primaryPct}%</small>
                     </div>
                     <div className="goals-chip">
-                      <span>Renda do mês</span>
+                      <span>
+                        {overview.paceBufferCents >= 0
+                          ? `Folga meta % (${overview.paceBufferWindowMonths}m)`
+                          : `Falta meta % (${overview.paceBufferWindowMonths}m)`}
+                      </span>
+                      <strong
+                        className={
+                          overview.paceBufferCents >= 0 ? 'pos' : 'neg'
+                        }
+                      >
+                        {overview.paceBufferSavedPct != null
+                          ? `${overview.paceBufferSavedPct.toFixed(1)}%`
+                          : '—'}
+                      </strong>
+                      <small>
+                        meta {overview.settings.primaryPct}%
+                        {hideAmounts
+                          ? ''
+                          : ` · ${
+                              overview.paceBufferCents >= 0 ? 'folga' : 'falta'
+                            } ${formatBRL(Math.abs(overview.paceBufferCents))}`}
+                      </small>
+                    </div>
+                    <div className="goals-chip">
+                      <span>Renda / despesa do mês</span>
                       <strong>
                         {money(
                           overview.month.incomePaidCents,
+                          hideAmounts,
+                        )}
+                      </strong>
+                      <strong className="neg goals-chip-secondary">
+                        {money(
+                          overview.month.consumptionPaidCents,
                           hideAmounts,
                         )}
                       </strong>
@@ -1093,7 +1138,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
                       hideAmounts={hideAmounts}
                     />
                     <CashflowSummary
-                      title={`Ano ${overview.year} · jan–${formatMonthShort(overview.monthKey)}`}
+                      title={`Ano ${overview.year} · jan–dez/${String(overview.year).slice(2)}`}
                       period={overview.yearToDate}
                       settings={overview.settings}
                       embedded
@@ -1311,7 +1356,13 @@ export function GoalsView({ apiFetch, onError }: Props) {
                   <p className="field-hint">{overview.projectionNote}</p>
                 </section>
               </>
-            ) : null}
+              ) : (
+                <div
+                  className="goals-loading-spacer"
+                  aria-hidden={!loading}
+                />
+              )}
+            </div>
           </div>
         </section>
       </PullToRefresh>

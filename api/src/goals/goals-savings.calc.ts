@@ -516,24 +516,64 @@ export function largestIncomeLaunchInMonth(
 }
 
 /**
- * Remaining discretionary spend this month vs primary % of realized+scheduled
- * Organizze income for the month.
+ * Remaining discretionary spend this month without missing the primary % save.
+ * Uses Oz period totals (expense already includes fatura etc.) — do not subtract
+ * installments again.
  */
-export function spendableThisMonthCents(params: {
-  month: PeriodSavings;
-  parcelsThisMonthCents: number;
-  primaryPct: number;
-}): number {
-  const income =
-    params.month.incomePaidCents + params.month.incomePlannedCents;
-  if (income <= 0) {
+export function spendableThisMonthCents(month: PeriodSavings): number {
+  if (month.incomePaidCents <= 0) {
     return 0;
   }
-  const targetPrimary = Math.round((income * params.primaryPct) / 100);
-  const afterTarget = income - targetPrimary;
-  const alreadyCommitted =
-    params.month.consumptionPaidCents + params.parcelsThisMonthCents;
-  return Math.max(0, afterTarget - alreadyCommitted);
+  // saved - targetPrimary = income×(1−pct) − expense
+  return Math.max(0, month.savedCents - month.targetPrimaryCents);
+}
+
+export type PrimaryPaceBuffer = {
+  incomeCents: number;
+  expenseCents: number;
+  savedCents: number;
+  targetSaveCents: number;
+  /** saved − target; >0 folga vs meta %, <0 falta acumulada */
+  bufferCents: number;
+  /** Actual save rate over the window (null if no income). */
+  savedPct: number | null;
+  monthsWithIncome: number;
+  windowMonths: number;
+};
+
+/**
+ * Rolling pace vs primary %: months that over/under-save compensate each other.
+ */
+export function cumulativePrimaryPaceBuffer(params: {
+  months: Array<{ incomeCents: number; expenseCents: number }>;
+  primaryPct: number;
+}): PrimaryPaceBuffer {
+  let incomeCents = 0;
+  let expenseCents = 0;
+  let monthsWithIncome = 0;
+  for (const month of params.months) {
+    incomeCents += Math.max(0, month.incomeCents);
+    expenseCents += Math.max(0, month.expenseCents);
+    if (month.incomeCents > 0) {
+      monthsWithIncome += 1;
+    }
+  }
+  const savedCents = incomeCents - expenseCents;
+  const targetSaveCents = Math.round(
+    (incomeCents * params.primaryPct) / 100,
+  );
+  const savedPct =
+    incomeCents > 0 ? (savedCents / incomeCents) * 100 : null;
+  return {
+    incomeCents,
+    expenseCents,
+    savedCents,
+    targetSaveCents,
+    bufferCents: savedCents - targetSaveCents,
+    savedPct,
+    monthsWithIncome,
+    windowMonths: params.months.length,
+  };
 }
 
 export function shiftMonthKey(yearMonth: string, delta: number): string {

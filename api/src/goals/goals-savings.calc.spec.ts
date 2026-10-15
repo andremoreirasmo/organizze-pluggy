@@ -2,6 +2,7 @@ import {
   buildOrganizzeMonthlyNets,
   classifyOrganizzeTx,
   computePeriodSavings,
+  cumulativePrimaryPaceBuffer,
   estimateGoalMonths,
   isTransferLike,
   monthsInclusive,
@@ -9,6 +10,7 @@ import {
   projectWealth,
   projectWealthAndGoals,
   requiredMonthlyForGoal,
+  spendableThisMonthCents,
   toGoalProgress,
   weeklySaveTargetCents,
 } from './goals-savings.calc';
@@ -497,5 +499,63 @@ describe('goals-savings.calc', () => {
     // Emergency stays allocated; land reaches target without sharing that 50k.
     expect(atEta!.allocatedCents).toBeGreaterThanOrEqual(15_000_000);
     expect(atEta!.wealthCents).toBeGreaterThanOrEqual(atEta!.allocatedCents);
+  });
+
+  it('spendable this month is excess above primary % (no parcel double-count)', () => {
+    const ahead = periodSavingsFromCashflow(1_000_000, 600_000, {
+      minPct: 20,
+      primaryPct: 30,
+      idealPct: 40,
+    });
+    // saved 400k, target 300k → 100k room
+    expect(ahead.savedCents).toBe(400_000);
+    expect(ahead.targetPrimaryCents).toBe(300_000);
+    expect(spendableThisMonthCents(ahead)).toBe(100_000);
+
+    const behind = periodSavingsFromCashflow(1_000_000, 800_000, {
+      minPct: 20,
+      primaryPct: 30,
+      idealPct: 40,
+    });
+    expect(spendableThisMonthCents(behind)).toBe(0);
+  });
+
+  it('accumulates primary % pace buffer across months (over/under compensate)', () => {
+    // Month A: income 1000, expense 600 → saved 400, target 30%=300 → +100
+    // Month B: income 1000, expense 800 → saved 200, target 300 → -100
+    // Net buffer 0
+    const even = cumulativePrimaryPaceBuffer({
+      primaryPct: 30,
+      months: [
+        { incomeCents: 1_000_000, expenseCents: 600_000 },
+        { incomeCents: 1_000_000, expenseCents: 800_000 },
+      ],
+    });
+    expect(even.savedCents).toBe(600_000);
+    expect(even.targetSaveCents).toBe(600_000);
+    expect(even.bufferCents).toBe(0);
+    expect(even.savedPct).toBeCloseTo(30, 5);
+
+    const ahead = cumulativePrimaryPaceBuffer({
+      primaryPct: 30,
+      months: [
+        { incomeCents: 1_000_000, expenseCents: 500_000 },
+        { incomeCents: 1_000_000, expenseCents: 700_000 },
+      ],
+    });
+    // saved 800k, target 600k → +200k folga
+    expect(ahead.bufferCents).toBe(200_000);
+
+    const behind = cumulativePrimaryPaceBuffer({
+      primaryPct: 30,
+      months: [
+        { incomeCents: 2_000_000, expenseCents: 1_800_000 },
+        { incomeCents: 1_000_000, expenseCents: 900_000 },
+      ],
+    });
+    // saved 300k, target 900k → -600k falta
+    expect(behind.bufferCents).toBe(-600_000);
+    expect(behind.monthsWithIncome).toBe(2);
+    expect(behind.windowMonths).toBe(2);
   });
 });
