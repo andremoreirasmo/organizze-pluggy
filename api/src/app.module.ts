@@ -15,6 +15,7 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { BalancesModule } from './balances/balances.module';
 import { InvestmentsModule } from './investments/investments.module';
 import { InstallmentsModule } from './installments/installments.module';
+import { CustomRecurringModule } from './custom-recurring/custom-recurring.module';
 import { validateEnv } from './config/env.validation';
 
 @Module({
@@ -41,6 +42,7 @@ import { validateEnv } from './config/env.validation';
     BalancesModule,
     InvestmentsModule,
     InstallmentsModule,
+    CustomRecurringModule,
   ],
   providers: [
     {

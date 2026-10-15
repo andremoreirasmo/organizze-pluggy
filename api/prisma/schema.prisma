@@ -62,3 +62,60 @@ model AuthSession {
 
   @@index([email])
 }
+
+enum CustomRecurringKind {
+  EXPENSE
+  INCOME
+}
+
+enum CustomRecurringUnit {
+  DAY
+  WEEK
+  MONTH
+}
+
+enum CustomRecurringStatus {
+  ACTIVE
+  CANCELLED
+}
+
+enum CustomRecurringOccurrenceStatus {
+  PENDING
+  CREATED
+  FAILED
+}
+
+/// App-owned recurrence (Organizze only gets normal one-off transactions).
+model CustomRecurringSeries {
+  id            String                @id @default(cuid())
+  kind          CustomRecurringKind
+  description   String
+  amountCents   Int
+  accountId     Int
+  categoryId    Int?
+  tags          Json
+  startDate     DateTime              @db.Date
+  endDate       DateTime              @db.Date
+  intervalUnit  CustomRecurringUnit
+  intervalCount Int
+  status        CustomRecurringStatus @default(ACTIVE)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  occurrences   CustomRecurringOccurrence[]
+}
+
+model CustomRecurringOccurrence {
+  id                     String                          @id @default(cuid())
+  seriesId               String
+  index                  Int
+  scheduledDate          DateTime                        @db.Date
+  amountCents            Int
+  /// Organizze ids exceed Postgres INT32 (e.g. 3_258_676_510).
+  organizzeTransactionId BigInt?
+  status                 CustomRecurringOccurrenceStatus @default(PENDING)
+  lastError              String?
+  series                 CustomRecurringSeries           @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([seriesId, index])
+  @@index([seriesId])
+}

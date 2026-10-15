@@ -9,6 +9,7 @@ type Props = {
   onCycleTheme: () => void
   onReconcile: () => void
   onBalances: () => void
+  onRecurring: () => void
   onDashboard: () => void
   onSettings: () => void
   onLogout: () => void
@@ -22,6 +23,7 @@ export function AppChrome({
   onCycleTheme,
   onReconcile,
   onBalances,
+  onRecurring,
   onDashboard,
   onSettings,
   onLogout,
@@ -127,6 +129,14 @@ export function AppChrome({
           </button>
           <button
             type="button"
+            className={`btn ghost ${view === 'recurring' ? 'active-nav' : ''}`}
+            onClick={onRecurring}
+          >
+            <span className="nav-label-full">Recorrências</span>
+            <span className="nav-label-short">Recorr.</span>
+          </button>
+          <button
+            type="button"
             className={`btn ghost ${view === 'dashboard' ? 'active-nav' : ''}`}
             onClick={onDashboard}
           >
@@ -220,6 +230,13 @@ export function AppChrome({
               onClick={() => go(onBalances)}
             >
               Saldos
+            </button>
+            <button
+              type="button"
+              className={`mobile-nav-link ${view === 'recurring' ? 'is-active' : ''}`}
+              onClick={() => go(onRecurring)}
+            >
+              Recorrências
             </button>
             <button
               type="button"

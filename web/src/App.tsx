@@ -5,6 +5,7 @@ import { AppChrome } from './AppChrome'
 import { BalancesView } from './BalancesView'
 import { BottomSheet } from './BottomSheet'
 import { ConfirmDialog } from './ConfirmDialog'
+import { CustomRecurringView } from './CustomRecurringView'
 import { DashboardView } from './DashboardView'
 import { PullToRefresh } from './PullToRefresh'
 import { ReconciliationView } from './ReconciliationView'
@@ -125,6 +126,7 @@ function initialVisitedViews(view: View): Record<View, boolean> {
   return {
     reconcile: true,
     balances: view === 'balances',
+    recurring: view === 'recurring',
     dashboard: view === 'dashboard',
     settings: view === 'settings',
   }
@@ -467,6 +469,7 @@ function App() {
   const scrollByViewRef = useRef<Record<View, number>>({
     reconcile: 0,
     balances: 0,
+    recurring: 0,
     dashboard: 0,
     settings: 0,
   })
@@ -503,6 +506,7 @@ function App() {
       setVisitedViews({
         reconcile: true,
         balances: false,
+        recurring: false,
         dashboard: false,
         settings: false,
       })
@@ -813,6 +817,10 @@ function App() {
 
   const openBalances = useCallback(() => {
     navigateToView('balances')
+  }, [navigateToView])
+
+  const openRecurring = useCallback(() => {
+    navigateToView('recurring')
   }, [navigateToView])
 
   const openDashboard = useCallback(() => {
@@ -1244,6 +1252,7 @@ function App() {
     setVisitedViews({
       reconcile: true,
       balances: false,
+      recurring: false,
       dashboard: false,
       settings: false,
     })
@@ -1350,6 +1359,7 @@ function App() {
         onCycleTheme={cyclePreference}
         onReconcile={openReconcile}
         onBalances={openBalances}
+        onRecurring={openRecurring}
         onDashboard={openDashboard}
         onSettings={() => void openSettings()}
         onLogout={() => void logout()}
@@ -1378,6 +1388,19 @@ function App() {
             aria-hidden={view !== 'balances'}
           >
             <BalancesView apiFetch={authenticatedFetch} onError={setError} />
+          </div>
+        ) : null}
+
+        {visitedViews.recurring ? (
+          <div
+            className="view-pane"
+            hidden={view !== 'recurring'}
+            aria-hidden={view !== 'recurring'}
+          >
+            <CustomRecurringView
+              apiFetch={authenticatedFetch}
+              onError={setError}
+            />
           </div>
         ) : null}
 

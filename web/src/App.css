@@ -5403,3 +5403,173 @@ html[data-theme='dark'] .parc-total {
 html[data-theme='dark'] .parc-row-money strong {
   color: var(--oz-danger);
 }
+
+/* —— Recorrências customizadas —— */
+.recurring-body {
+  padding: 0 1.35rem 1.35rem;
+}
+
+.recurring-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.recurring-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--oz-border);
+  border-radius: 14px;
+  background: var(--oz-bg);
+  padding: 0.95rem 1.05rem;
+  cursor: pointer;
+  color: inherit;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.recurring-card:hover {
+  border-color: color-mix(in srgb, var(--oz-ink) 22%, var(--oz-border));
+}
+
+.recurring-card:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.recurring-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.recurring-card-head > div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.recurring-card-head strong {
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.recurring-card-head strong.pos,
+.recurring-occ-row strong.pos,
+.recurring-preview .pos {
+  color: var(--oz-green-deep);
+}
+
+.recurring-card-head strong.neg,
+.recurring-occ-row strong.neg,
+.recurring-preview .neg {
+  color: var(--oz-danger);
+}
+
+.recurring-kind {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #868e96;
+}
+
+.recurring-kind.is-income {
+  color: var(--oz-green-deep);
+}
+
+.recurring-kind.is-expense {
+  color: var(--oz-danger);
+}
+
+.recurring-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+  font-size: 0.88rem;
+  color: #868e96;
+}
+
+.recurring-card-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-size: 0.9rem;
+  padding-top: 0.15rem;
+  border-top: 1px dashed var(--oz-border);
+}
+
+.recurring-date-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.recurring-preview {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--oz-ink) 4%, var(--oz-surface));
+  border: 1px solid var(--oz-border);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.recurring-occ-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+  max-height: min(46vh, 360px);
+  overflow: auto;
+}
+
+.recurring-occ-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.55rem 0.15rem;
+  border-bottom: 1px solid var(--oz-border);
+}
+
+.recurring-occ-row > div {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.recurring-occ-row span,
+.recurring-occ-row small {
+  font-size: 0.82rem;
+  color: #868e96;
+}
+
+@media (max-width: 640px) {
+  .recurring-body {
+    padding: 0 1rem 1rem;
+  }
+
+  .recurring-date-row {
+    grid-template-columns: 1fr;
+  }
+
+  .recurring-card-progress {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+html[data-theme='dark'] .recurring-card {
+  background: var(--oz-surface);
+}
+
+html[data-theme='dark'] .recurring-preview {
+  background: color-mix(in srgb, #fff 4%, var(--oz-surface));
+}

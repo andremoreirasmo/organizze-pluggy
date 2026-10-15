@@ -1,6 +1,7 @@
 export const ROUTES = {
   reconcile: '/conciliacao',
   balances: '/saldos',
+  recurring: '/recorrencias',
   dashboard: '/relatorios',
   settings: '/configuracoes',
 } as const
@@ -38,6 +39,9 @@ export function viewFromPath(pathname: string): AppView {
   const normalized = pathname.replace(/\/+$/, '') || '/'
   if (normalized === ROUTES.balances) {
     return 'balances'
+  }
+  if (normalized === ROUTES.recurring) {
+    return 'recurring'
   }
   if (normalized === ROUTES.dashboard) {
     return 'dashboard'
