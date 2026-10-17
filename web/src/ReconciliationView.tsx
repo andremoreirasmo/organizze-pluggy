@@ -645,6 +645,31 @@ function installmentLabel(tx: QueuePluggyTransaction): string | null {
   return null
 }
 
+/** Parcelas restantes a criar no Organizze a partir da parcela OF atual. */
+function remainingInstallments(
+  installmentNumber: number | null | undefined,
+  totalInstallments: number | null | undefined,
+): number {
+  const total = totalInstallments ?? 0
+  if (total <= 1) {
+    return Math.max(total, 0)
+  }
+  const current =
+    installmentNumber != null && installmentNumber >= 1 ? installmentNumber : 1
+  if (current > total) {
+    return 1
+  }
+  return total - current + 1
+}
+
+function isInstallmentSeriesCreate(pluggy: QueuePluggyTransaction): boolean {
+  return (
+    pluggy.kind === 'credit_purchase' &&
+    remainingInstallments(pluggy.installmentNumber, pluggy.totalInstallments) >
+      1
+  )
+}
+
 function kindClass(kind: ReconciliationKind): string {
   if (kind === 'credit_purchase') return 'kind-credit'
   if (kind === 'invoice_payment_candidate') return 'kind-invoice'
@@ -939,6 +964,16 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const createIsInvoicePayment = Boolean(
     createItem && isInvoicePaymentItem(createItem.pluggy),
   )
+
+  const createIsInstallmentSeries = Boolean(
+    createItem && isInstallmentSeriesCreate(createItem.pluggy),
+  )
+  const createSeriesRemaining = createItem
+    ? remainingInstallments(
+        createItem.pluggy.installmentNumber,
+        createItem.pluggy.totalInstallments,
+      )
+    : 0
 
   const loadQueue = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -2422,7 +2457,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       >
                         {isSamePersonTransfer(item.pluggy)
                           ? 'Transferir entre contas'
-                          : 'Criar lançamento'}
+                          : isInstallmentSeriesCreate(item.pluggy)
+                            ? `Criar parcelada (${remainingInstallments(item.pluggy.installmentNumber, item.pluggy.totalInstallments)}x)`
+                            : 'Criar lançamento'}
                       </button>
                     </>
                   )}
@@ -2475,14 +2512,18 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
               ? 'Transferência entre contas'
               : createIsInvoicePayment
                 ? 'Pagamento de fatura'
-                : 'Criar lançamento'
+                : createIsInstallmentSeries
+                  ? `Criar compra parcelada (${createSeriesRemaining}x)`
+                  : 'Criar lançamento'
           }
           subtitle={
             createIsTransfer
               ? 'Cria uma transferência no Organizze (saída + entrada) e grava o ID Pluggy nas observações.'
               : createIsInvoicePayment
                 ? 'Marca a fatura do cartão como paga no Organizze e concilia com esta saída bancária do Open Finance.'
-                : 'Confira destino, valor e data antes de enviar ao Organizze.'
+                : createIsInstallmentSeries
+                  ? 'O Organizze cria as próximas parcelas nas faturas seguintes. Valor = parcela atual.'
+                  : 'Confira destino, valor e data antes de enviar ao Organizze.'
           }
         >
           {modalBusy ? (
@@ -2603,6 +2644,17 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                           {createSelectedInvoice
                             ? invoiceOptionLabel(createSelectedInvoice).title
                             : 'Selecionando…'}
+                        </strong>
+                      </div>
+                    ) : null}
+                    {createIsInstallmentSeries ? (
+                      <div className="create-destination-row">
+                        <span>Parcelas no Organizze</span>
+                        <strong>
+                          {createSeriesRemaining}x a partir desta
+                          {installmentLabel(createItem.pluggy)
+                            ? ` (${installmentLabel(createItem.pluggy)})`
+                            : ''}
                         </strong>
                       </div>
                     ) : null}
@@ -2797,7 +2849,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                     disabled={modalBusy}
                     onClick={() => void importTx(createItem)}
                   >
-                    Criar no Organizze
+                    {createIsInstallmentSeries
+                      ? `Criar compra parcelada (${createSeriesRemaining}x)`
+                      : 'Criar no Organizze'}
                   </button>
                 )}
               </div>

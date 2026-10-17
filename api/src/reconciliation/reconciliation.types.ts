@@ -185,6 +185,26 @@ export function isInstallmentPurchase(params: {
   return total > 1;
 }
 
+/**
+ * How many monthly installments to create in Organizze from the current OF
+ * parcel onward (e.g. 3/12 → 10, 1/12 → 12). Null current counts as 1.
+ */
+export function remainingInstallments(
+  installmentNumber: number | null | undefined,
+  totalInstallments: number | null | undefined,
+): number {
+  const total = totalInstallments ?? 0;
+  if (total <= 1) {
+    return Math.max(total, 0);
+  }
+  const current =
+    installmentNumber != null && installmentNumber >= 1 ? installmentNumber : 1;
+  if (current > total) {
+    return 1;
+  }
+  return total - current + 1;
+}
+
 function normalizeDescription(value: string): string {
   return value
     .normalize('NFD')

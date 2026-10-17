@@ -135,6 +135,11 @@ export type OrganizzeInvoice = {
   payments?: OrganizzeTransaction[];
 };
 
+export type CreateOrganizzeInstallmentsAttributes = {
+  periodicity: 'monthly';
+  total: number;
+};
+
 export type CreateOrganizzeTransactionPayload = {
   description: string;
   date: string;
@@ -148,6 +153,8 @@ export type CreateOrganizzeTransactionPayload = {
   recurring?: boolean;
   total_installments?: number;
   installment?: number;
+  /** Creates a monthly installment series (Organizze ignores total_installments for this). */
+  installments_attributes?: CreateOrganizzeInstallmentsAttributes;
   tags?: OrganizzeTag[];
 };
 

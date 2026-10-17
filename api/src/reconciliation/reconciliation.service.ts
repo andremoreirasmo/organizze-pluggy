@@ -41,6 +41,7 @@ import {
   looksLikeInvoicePayment,
   looksLikeSamePersonTransfer,
   parseDateOnly,
+  remainingInstallments,
   scoreMatch,
   toAmountCents,
   toOrganizzeAmountCents,
@@ -576,8 +577,15 @@ export class ReconciliationService {
         );
       }
 
+      const seriesTotal = remainingInstallments(
+        pluggy.installmentNumber,
+        pluggy.totalInstallments,
+      );
+      const createAsInstallmentSeries = seriesTotal > 1;
       const created = await this.organizze.createTransaction({
-        description: this.buildImportDescription(pluggy, body.description),
+        description: this.buildImportDescription(pluggy, body.description, {
+          asInstallmentSeries: createAsInstallmentSeries,
+        }),
         date: pluggy.date.slice(0, 10),
         amount_cents: amountCents,
         paid: body.paid ?? true,
@@ -585,8 +593,17 @@ export class ReconciliationService {
         category_id: body.categoryId ?? null,
         credit_card_id: creditCardId,
         credit_card_invoice_id: body.creditCardInvoiceId ?? null,
-        installment: pluggy.installmentNumber ?? 1,
-        total_installments: pluggy.totalInstallments ?? 1,
+        ...(createAsInstallmentSeries
+          ? {
+              installments_attributes: {
+                periodicity: 'monthly' as const,
+                total: seriesTotal,
+              },
+            }
+          : {
+              installment: pluggy.installmentNumber ?? 1,
+              total_installments: pluggy.totalInstallments ?? 1,
+            }),
         ...(tags ? { tags } : {}),
       });
       perf.mark('organizze.createTransaction');
@@ -2137,8 +2154,13 @@ export class ReconciliationService {
   private buildImportDescription(
     pluggy: QueuePluggyTransaction,
     override?: string,
+    options?: { asInstallmentSeries?: boolean },
   ): string {
     const base = override?.trim() || pluggy.description;
+    // Organizze numbers the series itself when using installments_attributes.
+    if (options?.asInstallmentSeries) {
+      return base.replace(/\s*\(\d+\s*\/\s*\d+\)\s*$/u, '').trim() || base;
+    }
     const total = pluggy.totalInstallments ?? 0;
     const current = pluggy.installmentNumber ?? 0;
     if (total <= 1 || current <= 0) {
