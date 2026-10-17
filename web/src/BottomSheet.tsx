@@ -8,6 +8,9 @@ type BottomSheetProps = {
   labelledBy?: string
   className?: string
   busy?: boolean
+  /** Shown in the fixed overlay while `busy` (stays visible over scroll). */
+  busyLabel?: string
+  busyHint?: string
   children: ReactNode
   /** Optional custom header content (replaces title/subtitle). Close button still shown. */
   header?: ReactNode
@@ -20,6 +23,8 @@ export function BottomSheet({
   labelledBy,
   className,
   busy = false,
+  busyLabel = 'Carregando…',
+  busyHint,
   children,
   header,
 }: BottomSheetProps) {
@@ -80,6 +85,13 @@ export function BottomSheet({
           </button>
         </header>
         <div className="sheet-body">{children}</div>
+        {busy ? (
+          <div className="sheet-busy-overlay" role="status">
+            <span className="spinner lg" aria-hidden />
+            <strong>{busyLabel}</strong>
+            {busyHint ? <p>{busyHint}</p> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   )

@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { BottomSheet } from './BottomSheet'
 import { ConfirmDialog } from './ConfirmDialog'
+import { MoneyInput } from './MoneyInput.tsx'
 import { MonthNavigator } from './MonthNavigator'
 import { PullToRefresh } from './PullToRefresh'
 import {
@@ -149,66 +150,6 @@ function formatMonthTitle(monthKey: string): string {
     year: 'numeric',
     timeZone: 'UTC',
   })
-}
-
-function parseUnsignedBRLInputToCents(value: string): number | null {
-  const digits = value.replace(/\D/g, '')
-  if (!digits) {
-    return null
-  }
-  const cents = Number(digits)
-  if (!Number.isFinite(cents) || cents < 0) {
-    return null
-  }
-  return cents
-}
-
-function parseSignedBRLInputToCents(value: string): number | null {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return null
-  }
-  const negative = trimmed.startsWith('-')
-  const digits = trimmed.replace(/\D/g, '')
-  if (!digits) {
-    return null
-  }
-  const cents = Number(digits)
-  if (!Number.isFinite(cents)) {
-    return null
-  }
-  return negative ? -cents : cents
-}
-
-/** Digits-as-cents mask: 5000000 → "50.000,00". */
-function formatBrlInputFromDigits(raw: string): string {
-  const digits = raw.replace(/\D/g, '').replace(/^0+(?=\d)/, '')
-  if (!digits) {
-    return ''
-  }
-  const cents = Number(digits)
-  if (!Number.isFinite(cents)) {
-    return ''
-  }
-  return (cents / 100).toLocaleString('pt-BR', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-}
-
-function centsToBrlInput(cents: number): string {
-  return formatBrlInputFromDigits(String(Math.max(0, Math.round(cents))))
-}
-
-function formatSignedBrlInputFromDigits(raw: string): string {
-  const trimmed = raw.trim()
-  const negative =
-    trimmed.startsWith('-') || (trimmed.includes('-') && !trimmed.endsWith('-'))
-  const formatted = formatBrlInputFromDigits(raw)
-  if (!formatted) {
-    return trimmed === '-' ? '-' : ''
-  }
-  return negative ? `-${formatted}` : formatted
 }
 
 function paceLabel(pace: GoalProgress['pace']): string {
@@ -624,14 +565,18 @@ export function GoalsView({ apiFetch, onError }: Props) {
   const [goalFormOpen, setGoalFormOpen] = useState(false)
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null)
   const [goalName, setGoalName] = useState('')
-  const [goalTarget, setGoalTarget] = useState('')
-  const [goalAllocated, setGoalAllocated] = useState('')
+  const [goalTargetCents, setGoalTargetCents] = useState<number | null>(null)
+  const [goalAllocatedCents, setGoalAllocatedCents] = useState<number | null>(
+    null,
+  )
   const [goalDate, setGoalDate] = useState('')
   const [goalPriority, setGoalPriority] = useState('100')
   const [savingGoal, setSavingGoal] = useState(false)
 
   const [allocateGoal, setAllocateGoal] = useState<GoalProgress | null>(null)
-  const [allocateAmount, setAllocateAmount] = useState('')
+  const [allocateAmountCents, setAllocateAmountCents] = useState<number | null>(
+    null,
+  )
   const [allocating, setAllocating] = useState(false)
 
   const [deleteGoal, setDeleteGoal] = useState<GoalProgress | null>(null)
@@ -760,8 +705,8 @@ export function GoalsView({ apiFetch, onError }: Props) {
   const openCreateGoal = () => {
     setEditingGoalId(null)
     setGoalName('')
-    setGoalTarget('')
-    setGoalAllocated('')
+    setGoalTargetCents(null)
+    setGoalAllocatedCents(null)
     setGoalDate('')
     setGoalPriority('100')
     setGoalFormOpen(true)
@@ -770,8 +715,8 @@ export function GoalsView({ apiFetch, onError }: Props) {
   const openEditGoal = (goal: GoalProgress) => {
     setEditingGoalId(goal.id)
     setGoalName(goal.name)
-    setGoalTarget(centsToBrlInput(goal.targetCents))
-    setGoalAllocated(centsToBrlInput(goal.allocatedCents))
+    setGoalTargetCents(goal.targetCents)
+    setGoalAllocatedCents(goal.allocatedCents)
     setGoalDate(goal.targetDate?.slice(0, 10) ?? '')
     setGoalPriority(String(goal.priority))
     setGoalFormOpen(true)
@@ -791,7 +736,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
       onError('Informe o nome do objetivo')
       return
     }
-    const targetCents = parseUnsignedBRLInputToCents(goalTarget)
+    const targetCents = goalTargetCents
     if (targetCents === null || targetCents <= 0) {
       onError('Informe o valor da meta')
       return
@@ -813,7 +758,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
         setEditingGoalId(null)
         await load(month, { silent: true })
       } else {
-        const allocatedCents = parseUnsignedBRLInputToCents(goalAllocated) ?? 0
+        const allocatedCents = goalAllocatedCents ?? 0
         await apiFetch('/api/goals', {
           method: 'POST',
           body: JSON.stringify({
@@ -844,7 +789,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
     if (!allocateGoal) {
       return
     }
-    const amountCents = parseSignedBRLInputToCents(allocateAmount)
+    const amountCents = allocateAmountCents
     if (amountCents === null || amountCents === 0) {
       onError('Informe um valor para alocar')
       return
@@ -1228,7 +1173,7 @@ export function GoalsView({ apiFetch, onError }: Props) {
                               title="Alocar"
                               aria-label={`Alocar em ${goal.name}`}
                               onClick={() => {
-                                setAllocateAmount('')
+                                setAllocateAmountCents(null)
                                 setAllocateGoal(goal)
                               }}
                             >
@@ -1419,33 +1364,24 @@ export function GoalsView({ apiFetch, onError }: Props) {
             </label>
             <label>
               Valor da meta (R$)
-              <input
-                value={goalTarget}
+              <MoneyInput
+                valueCents={goalTargetCents}
                 disabled={savingGoal}
-                inputMode="numeric"
-                placeholder="0,00"
-                onChange={(e) =>
-                  setGoalTarget(formatBrlInputFromDigits(e.target.value))
-                }
+                onChangeCents={setGoalTargetCents}
               />
             </label>
             {editingGoalId ? (
               <p className="field-hint">
-                Já alocado:{' '}
-                {formatBRL(parseUnsignedBRLInputToCents(goalAllocated) ?? 0)}{' '}
-                (ajuste pelo ícone de alocar)
+                Já alocado: {formatBRL(goalAllocatedCents ?? 0)} (ajuste pelo
+                ícone de alocar)
               </p>
             ) : (
               <label>
                 Já alocado (R$)
-                <input
-                  value={goalAllocated}
+                <MoneyInput
+                  valueCents={goalAllocatedCents}
                   disabled={savingGoal}
-                  inputMode="numeric"
-                  placeholder="0,00"
-                  onChange={(e) =>
-                    setGoalAllocated(formatBrlInputFromDigits(e.target.value))
-                  }
+                  onChangeCents={setGoalAllocatedCents}
                 />
               </label>
             )}
@@ -1500,16 +1436,12 @@ export function GoalsView({ apiFetch, onError }: Props) {
           <div className="settings-form modal-body">
             <label>
               Valor (R$)
-              <input
-                value={allocateAmount}
+              <MoneyInput
+                valueCents={allocateAmountCents}
                 disabled={allocating}
-                inputMode="numeric"
+                allowNegative
                 placeholder="0,00 ou -0,00"
-                onChange={(e) =>
-                  setAllocateAmount(
-                    formatSignedBrlInputFromDigits(e.target.value),
-                  )
-                }
+                onChangeCents={setAllocateAmountCents}
               />
             </label>
             <div className="modal-actions">

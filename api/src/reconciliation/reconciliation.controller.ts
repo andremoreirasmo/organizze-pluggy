@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsInt,
@@ -16,6 +17,8 @@ import {
   IsString,
   Matches,
   MaxLength,
+  Min,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ReconciliationService } from './reconciliation.service';
@@ -146,6 +149,65 @@ class TransferDto extends DateRangeDto {
   amountCents?: number;
 }
 
+class CardLendPersonDto {
+  @IsString()
+  @MaxLength(80)
+  name!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  amountCents!: number;
+}
+
+class CardLendDto extends DateRangeDto {
+  @Type(() => Number)
+  @IsInt()
+  creditCardId!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  creditCardInvoiceId!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  description?: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  myAmountCents!: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  myCategoryId?: number | null;
+
+  @Type(() => Number)
+  @IsInt()
+  peopleCategoryId!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  receiveAccountId!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  receiveCategoryId!: number;
+
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  receiveDate!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => CardLendPersonDto)
+  people!: CardLendPersonDto[];
+}
+
 @Controller('reconciliation')
 export class ReconciliationController {
   constructor(private readonly reconciliation: ReconciliationService) {}
@@ -209,6 +271,14 @@ export class ReconciliationController {
     @Body() body: InvoicePaymentDto,
   ) {
     return this.reconciliation.createInvoicePayment(pluggyTxId, body);
+  }
+
+  @Post(':pluggyTxId/card-lend')
+  cardLend(
+    @Param('pluggyTxId') pluggyTxId: string,
+    @Body() body: CardLendDto,
+  ) {
+    return this.reconciliation.createCardLend(pluggyTxId, body);
   }
 
   @Post(':pluggyTxId/ignore')

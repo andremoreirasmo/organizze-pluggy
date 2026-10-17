@@ -27,6 +27,15 @@ import {
 } from '../settings/settings.types';
 import { startPerf } from '../common/perf';
 import {
+  cardLendInstallmentsAttributes,
+  cardLendSeriesTotal,
+  validateCardLendSplit,
+} from './card-lend';
+import {
+  creditLookbackDateFrom,
+  pluggyReconMonthMembership,
+} from './pluggy-competence';
+import {
   buildHistorySuggestion,
   historyLinkScoreBonus,
   type HistoryDecisionSample,
@@ -356,12 +365,12 @@ export class ReconciliationService {
       }
     }
 
-    const pluggyBundles = await this.pluggy.listTransactionsForAccounts({
-      accountIds: mappedAccountIds,
-      dateFrom: from,
-      dateTo: to,
-      accounts: pluggyAccounts,
-    });
+    const pluggyBundles = await this.listPluggyBundlesForReconMonth(
+      activeMaps,
+      from,
+      to,
+      pluggyAccounts,
+    );
     const pluggyTxCount = pluggyBundles.reduce(
       (sum, bundle) => sum + bundle.transactions.length,
       0,
@@ -382,6 +391,10 @@ export class ReconciliationService {
         if (decidedIds.has(tx.id) || linkedPluggyIds.has(tx.id)) {
           continue;
         }
+        const membership = pluggyReconMonthMembership(tx, from, to);
+        if (!membership.include) {
+          continue;
+        }
 
         const cardNumber = transactionCardNumber(tx, bundle.account);
         const queueTx = this.toQueueTransaction(
@@ -390,6 +403,7 @@ export class ReconciliationService {
           map,
           cardNumber,
           resolveCardNickname(map, cardNumber),
+          membership.queueDate,
         );
         const historySuggestion = buildHistorySuggestion(
           queueTx.description,
@@ -699,6 +713,222 @@ export class ReconciliationService {
     perf.end(`accountId=${accountId}`);
 
     return { organizzeTransaction: created, pluggy };
+  }
+
+  async createCardLend(
+    pluggyTxId: string,
+    body: {
+      from: string;
+      to: string;
+      creditCardId: number;
+      creditCardInvoiceId: number;
+      description?: string;
+      myAmountCents: number;
+      myCategoryId?: number | null;
+      peopleCategoryId: number;
+      receiveAccountId: number;
+      receiveCategoryId: number;
+      receiveDate: string;
+      people: Array<{ name: string; amountCents: number }>;
+    },
+  ) {
+    const perf = startPerf(`cardLend ${pluggyTxId}`);
+    const queueItem = await this.resolvePendingPluggyTransaction(
+      pluggyTxId,
+      body.from,
+      body.to,
+    );
+    perf.mark('resolvePending');
+    const pluggy = queueItem.pluggy;
+
+    if (pluggy.kind !== 'credit_purchase') {
+      throw new BadRequestException(
+        'Emprestei o cartão só vale para compras de cartão Open Finance',
+      );
+    }
+
+    const totalCents = Math.abs(pluggy.organizzeAmountCents);
+    const people = body.people.map((person) => ({
+      name: person.name.trim(),
+      amountCents: person.amountCents,
+    }));
+    const split = validateCardLendSplit({
+      totalCents,
+      myAmountCents: body.myAmountCents,
+      people,
+    });
+    if (!split.ok) {
+      throw new BadRequestException(split.message);
+    }
+    if (body.myAmountCents > 0 && body.myCategoryId == null) {
+      throw new BadRequestException(
+        'Selecione a categoria da sua parte na compra',
+      );
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.receiveDate)) {
+      throw new BadRequestException('receiveDate must be YYYY-MM-DD');
+    }
+
+    const creditCardId =
+      body.creditCardId ||
+      (pluggy.mappedTargetType === 'credit_card'
+        ? pluggy.mappedOrganizzeTargetId
+        : 0);
+    if (!creditCardId) {
+      throw new BadRequestException('creditCardId is required');
+    }
+
+    const baseDescription =
+      body.description?.trim() || pluggy.description || 'Compra no cartão';
+    const purchaseDate = pluggy.date.slice(0, 10);
+    const markerNotes = this.organizze.appendPluggyMarker(null, pluggyTxId);
+    const seriesTotal = cardLendSeriesTotal(
+      pluggy.installmentNumber,
+      pluggy.totalInstallments,
+    );
+    const installmentAttrs = cardLendInstallmentsAttributes(
+      pluggy.installmentNumber,
+      pluggy.totalInstallments,
+    );
+    const seriesPayload = installmentAttrs
+      ? { installments_attributes: installmentAttrs }
+      : {};
+
+    const [accountNames, cardNames, categoryNames] = await Promise.all([
+      this.loadOrganizzeAccountNames(),
+      this.loadOrganizzeCreditCardNames(),
+      this.loadOrganizzeCategoryNames(),
+    ]);
+
+    type CreatedLeg = {
+      role: 'mine' | 'person_card' | 'person_receive';
+      personName?: string;
+      transaction: OrganizzeTransaction;
+    };
+    const created: CreatedLeg[] = [];
+    let markerAttached = false;
+
+    const createCardExpense = async (params: {
+      description: string;
+      amountCents: number;
+      categoryId: number;
+      withMarker: boolean;
+    }) => {
+      const tx = await this.organizze.createTransaction({
+        description: params.description,
+        date: purchaseDate,
+        amount_cents: -Math.abs(params.amountCents),
+        paid: true,
+        notes: params.withMarker ? markerNotes : null,
+        category_id: params.categoryId,
+        credit_card_id: creditCardId,
+        credit_card_invoice_id: body.creditCardInvoiceId,
+        ...seriesPayload,
+      });
+      return tx;
+    };
+
+    try {
+      if (body.myAmountCents > 0 && body.myCategoryId != null) {
+        const mine = await createCardExpense({
+          description: baseDescription,
+          amountCents: body.myAmountCents,
+          categoryId: body.myCategoryId,
+          withMarker: true,
+        });
+        markerAttached = true;
+        created.push({ role: 'mine', transaction: mine });
+      }
+
+      for (const person of people) {
+        const cardTx = await createCardExpense({
+          description: `${person.name} — ${baseDescription}`,
+          amountCents: person.amountCents,
+          categoryId: body.peopleCategoryId,
+          withMarker: !markerAttached,
+        });
+        if (!markerAttached) {
+          markerAttached = true;
+        }
+        created.push({
+          role: 'person_card',
+          personName: person.name,
+          transaction: cardTx,
+        });
+
+        const receiveTx = await this.organizze.createTransaction({
+          description: `A receber — ${person.name} — ${baseDescription}`,
+          date: body.receiveDate,
+          amount_cents: Math.abs(person.amountCents),
+          paid: false,
+          notes: null,
+          category_id: body.receiveCategoryId,
+          account_id: body.receiveAccountId,
+          ...seriesPayload,
+        });
+        created.push({
+          role: 'person_receive',
+          personName: person.name,
+          transaction: receiveTx,
+        });
+      }
+    } catch (error) {
+      const createdIds = created.map((leg) => leg.transaction.id).join(', ');
+      this.logger.error(
+        `cardLend partial failure for ${pluggyTxId}; already created: [${createdIds}]`,
+      );
+      throw error;
+    }
+    perf.mark(`organizze.create n=${created.length}`);
+
+    const primary =
+      created.find((leg) => leg.role === 'mine')?.transaction ??
+      created.find((leg) => leg.role === 'person_card')?.transaction ??
+      null;
+    if (!primary) {
+      throw new BadRequestException('Nenhum lançamento de cartão foi criado');
+    }
+
+    const categoryId = primary.category_id;
+    await this.upsertDecision(
+      pluggyTxId,
+      pluggy.providerId,
+      ReviewDecisionType.IMPORTED,
+      `card-lend people=${people.length} series=${seriesTotal}x`,
+      this.toDecisionSnapshot(pluggy, {
+        organizzeTransactionId: primary.id,
+        organizzeDescription: primary.description,
+        organizzeAccountName: this.organizzeTxDestination(
+          primary,
+          accountNames,
+          cardNames,
+        ),
+        organizzeTargetType: 'credit_card',
+        organizzeLinkedAmountCents: pluggy.organizzeAmountCents,
+        organizzeRecurring: primary.recurring,
+        wasPaidBeforeLink: null,
+        organizzeCategoryId: categoryId,
+        organizzeCategoryName:
+          categoryId != null
+            ? (categoryNames.get(categoryId) ?? null)
+            : null,
+        organizzeTags: null,
+      }),
+    );
+    perf.mark('upsertDecision');
+    perf.end(`legs=${created.length}`);
+
+    return {
+      pluggy,
+      created: created.map((leg) => ({
+        role: leg.role,
+        personName: leg.personName ?? null,
+        organizzeTransactionId: leg.transaction.id,
+        description: leg.transaction.description,
+        amountCents: leg.transaction.amount_cents,
+        date: leg.transaction.date,
+      })),
+    };
   }
 
   async createInvoicePayment(
@@ -1309,12 +1539,12 @@ export class ReconciliationService {
     const accounts = await this.pluggy.listAccounts();
     perf.mark(`accounts n=${accounts.length}`);
 
-    const bundles = await this.pluggy.listTransactionsForAccounts({
-      accountIds: activeMaps.map((map) => map.pluggyAccountId),
-      dateFrom: from,
-      dateTo: to,
+    const bundles = await this.listPluggyBundlesForReconMonth(
+      activeMaps,
+      from,
+      to,
       accounts,
-    });
+    );
     const txCount = bundles.reduce(
       (sum, bundle) => sum + bundle.transactions.length,
       0,
@@ -1330,6 +1560,10 @@ export class ReconciliationService {
       if (!tx) {
         continue;
       }
+      const membership = pluggyReconMonthMembership(tx, from, to);
+      if (!membership.include) {
+        continue;
+      }
       const cardNumber = transactionCardNumber(tx, bundle.account);
       const pluggy = this.toQueueTransaction(
         tx,
@@ -1337,6 +1571,7 @@ export class ReconciliationService {
         map,
         cardNumber,
         resolveCardNickname(map, cardNumber),
+        membership.queueDate,
       );
       perf.end('found');
       return { pluggy };
@@ -1710,17 +1945,21 @@ export class ReconciliationService {
       const mapsByPluggyId = new Map(
         activeMaps.map((map) => [map.pluggyAccountId, map]),
       );
-      const bundles = await this.pluggy.listTransactionsForAccounts({
-        accountIds: mappedAccountIds,
-        dateFrom: from,
-        dateTo: to,
-      });
+      const bundles = await this.listPluggyBundlesForReconMonth(
+        activeMaps,
+        from,
+        to,
+      );
       for (const bundle of bundles) {
         const map = mapsByPluggyId.get(bundle.mapKey);
         if (!map) {
           continue;
         }
         for (const tx of bundle.transactions) {
+          const membership = pluggyReconMonthMembership(tx, from, to);
+          if (!membership.include) {
+            continue;
+          }
           const cardNumber = transactionCardNumber(tx, bundle.account);
           const queueTx = this.toQueueTransaction(
             tx,
@@ -1728,6 +1967,7 @@ export class ReconciliationService {
             map,
             cardNumber,
             resolveCardNickname(map, cardNumber),
+            membership.queueDate,
           );
           byId.set(queueTx.id, queueTx);
         }
@@ -1738,6 +1978,51 @@ export class ReconciliationService {
       );
     }
     return byId;
+  }
+
+  /**
+   * Credit cards: look back for installment rows dated on purchase.
+   * Bank accounts: exact month window.
+   */
+  private async listPluggyBundlesForReconMonth(
+    activeMaps: ActiveAccountMap[],
+    from: string,
+    to: string,
+    accounts?: Account[],
+  ): Promise<
+    Array<{
+      account: Account;
+      mapKey: string;
+      transactions: PluggyTransaction[];
+    }>
+  > {
+    const creditIds = activeMaps
+      .filter((map) => map.targetType === 'credit_card')
+      .map((map) => map.pluggyAccountId);
+    const bankIds = activeMaps
+      .filter((map) => map.targetType === 'account')
+      .map((map) => map.pluggyAccountId);
+
+    const [creditBundles, bankBundles] = await Promise.all([
+      creditIds.length > 0
+        ? this.pluggy.listTransactionsForAccounts({
+            accountIds: creditIds,
+            dateFrom: creditLookbackDateFrom(from),
+            dateTo: to,
+            accounts,
+          })
+        : Promise.resolve([]),
+      bankIds.length > 0
+        ? this.pluggy.listTransactionsForAccounts({
+            accountIds: bankIds,
+            dateFrom: from,
+            dateTo: to,
+            accounts,
+          })
+        : Promise.resolve([]),
+    ]);
+
+    return [...creditBundles, ...bankBundles];
   }
 
   /** Fallback when the month-range index misses a linked Pluggy tx. */
@@ -1998,13 +2283,14 @@ export class ReconciliationService {
     map: ActiveAccountMap,
     cardNumber?: string | null,
     accountNickname?: string | null,
+    queueDate?: string,
   ): QueuePluggyTransaction {
     const description =
       tx.description ?? tx.merchant?.name ?? tx.category ?? 'Sem descrição';
     const amount = typeof tx.amount === 'number' ? tx.amount : 0;
     const dateSource =
       tx.date instanceof Date ? tx.date.toISOString() : String(tx.date);
-    const date = dateSource.slice(0, 10);
+    const date = (queueDate || dateSource).slice(0, 10);
     const accountType = account.type ?? null;
     const operationType =
       typeof tx.operationType === 'string' ? tx.operationType : null;

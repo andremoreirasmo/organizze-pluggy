@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { BottomSheet } from './BottomSheet'
 import { CategoryPicker, type CategoryOption } from './CategoryPicker'
 import { ConfirmDialog } from './ConfirmDialog'
+import { MoneyInput } from './MoneyInput.tsx'
 import { OptionPicker } from './OptionPicker'
 import { PullToRefresh } from './PullToRefresh'
 import { TagPicker, type TagOption } from './TagPicker'
@@ -69,7 +70,7 @@ type OrganizzeAccount = {
 type FormState = {
   kind: RecurringKind
   description: string
-  amount: string
+  amountCents: number | null
   accountId: string
   categoryId: string
   tags: string[]
@@ -106,27 +107,6 @@ function formatDate(iso: string): string {
   })
 }
 
-function parseUnsignedBRLInputToCents(value: string): number | null {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return null
-  }
-  const normalized = trimmed.includes(',')
-    ? Number(trimmed.replace(/\./g, '').replace(',', '.'))
-    : Number(trimmed)
-  if (!Number.isFinite(normalized) || normalized <= 0) {
-    return null
-  }
-  return Math.round(normalized * 100)
-}
-
-function formatUnsignedAmountInput(amountCents: number): string {
-  return (Math.abs(amountCents) / 100).toLocaleString('pt-BR', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-}
-
 function intervalLabel(unit: RecurringUnit, count: number): string {
   const n = Math.max(1, count)
   if (unit === 'DAY') {
@@ -158,7 +138,7 @@ function emptyForm(): FormState {
   return {
     kind: 'EXPENSE',
     description: '',
-    amount: '',
+    amountCents: null,
     accountId: '',
     categoryId: '',
     tags: [],
@@ -173,7 +153,7 @@ function formFromSeries(series: SeriesDetail): FormState {
   return {
     kind: series.kind,
     description: series.description,
-    amount: formatUnsignedAmountInput(series.amountCents),
+    amountCents: Math.abs(series.amountCents),
     accountId: String(series.accountId),
     categoryId: series.categoryId != null ? String(series.categoryId) : '',
     tags: [...series.tags],
@@ -323,10 +303,11 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
       setPreviewError(null)
       return
     }
-    const amountCents = parseUnsignedBRLInputToCents(form.amount)
+    const amountCents = form.amountCents
     const intervalCount = Number(form.intervalCount)
     if (
       amountCents === null ||
+      amountCents <= 0 ||
       !form.startDate ||
       !form.endDate ||
       !Number.isFinite(intervalCount) ||
@@ -370,7 +351,7 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
     }
   }, [
     formOpen,
-    form.amount,
+    form.amountCents,
     form.startDate,
     form.endDate,
     form.intervalUnit,
@@ -489,8 +470,8 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
       onError('Informe a descrição')
       return
     }
-    const amountCents = parseUnsignedBRLInputToCents(form.amount)
-    if (amountCents === null) {
+    const amountCents = form.amountCents
+    if (amountCents === null || amountCents <= 0) {
       onError('Informe um valor válido')
       return
     }
@@ -721,6 +702,12 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
         <BottomSheet
           onClose={closeForm}
           busy={saving}
+          busyLabel={editingId ? 'Atualizando série…' : 'Criando série…'}
+          busyHint={
+            editingId
+              ? 'Adicionando ou removendo lançamentos no Organizze.'
+              : 'Gerando datas e lançamentos no Organizze.'
+          }
           labelledBy="recurring-form-title"
           title={editingId ? 'Ajustar data fim' : 'Nova recorrência'}
           subtitle={
@@ -729,20 +716,6 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
               : 'Cria lançamentos avulsos no Organizze — sem recorrência nativa.'
           }
         >
-          {saving ? (
-            <div className="modal-loading" role="status">
-              <span className="spinner lg" aria-hidden />
-              <strong>
-                {editingId ? 'Atualizando série…' : 'Criando série…'}
-              </strong>
-              <p>
-                {editingId
-                  ? 'Adicionando ou removendo lançamentos no Organizze.'
-                  : 'Gerando datas e lançamentos no Organizze.'}
-              </p>
-            </div>
-          ) : null}
-
           <div className="settings-form modal-body">
             {editingId ? (
               <>
@@ -760,7 +733,7 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
                     <strong className={form.kind === 'INCOME' ? 'pos' : 'neg'}>
                       {form.kind === 'EXPENSE' ? '−' : '+'}
                       {formatBRL(
-                        parseUnsignedBRLInputToCents(form.amount) ?? 0,
+                        form.amountCents ?? 0,
                       )}
                     </strong>
                   </div>
@@ -843,14 +816,13 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
 
                 <label>
                   Valor (R$)
-                  <input
-                    value={form.amount}
+                  <MoneyInput
+                    valueCents={form.amountCents}
                     disabled={saving}
-                    inputMode="decimal"
-                    onChange={(event) =>
+                    onChangeCents={(amountCents) =>
                       setForm((current) => ({
                         ...current,
-                        amount: event.target.value,
+                        amountCents,
                       }))
                     }
                   />
@@ -889,8 +861,8 @@ export function CustomRecurringView({ apiFetch, onError }: Props) {
                     value={form.categoryId}
                     amountCents={
                       form.kind === 'EXPENSE'
-                        ? -(parseUnsignedBRLInputToCents(form.amount) ?? 100)
-                        : parseUnsignedBRLInputToCents(form.amount) ?? 100
+                        ? -(form.amountCents ?? 100)
+                        : form.amountCents ?? 100
                     }
                     disabled={saving}
                     onChange={(categoryId) =>

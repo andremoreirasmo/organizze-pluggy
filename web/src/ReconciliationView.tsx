@@ -12,7 +12,10 @@ import {
   formatInvoiceDate,
   invoiceOptionLabel,
 } from './InvoicePicker'
+import { CardLendModal } from './CardLendModal'
+import { MoneyInput } from './MoneyInput.tsx'
 import { MonthNavigator } from './MonthNavigator'
+import { formatBrlFromCents } from './moneyMask'
 import { PullToRefresh } from './PullToRefresh'
 import {
   monthParamForUrl,
@@ -204,7 +207,13 @@ type OrganizzeTransactionRow = {
 
 type ApiFetch = <T>(path: string, init?: RequestInit) => Promise<T>
 
-type ActionKind = 'link' | 'import' | 'invoice' | 'ignore' | 'transfer'
+type ActionKind =
+  | 'link'
+  | 'import'
+  | 'invoice'
+  | 'ignore'
+  | 'transfer'
+  | 'card-lend'
 
 type ActionState = {
   pluggyId: string
@@ -234,56 +243,6 @@ function formatBRL(amountCents: number): string {
   })
 }
 
-function formatSignedAmountInput(amountCents: number): string {
-  const abs = Math.abs(amountCents / 100)
-  const formatted = abs.toLocaleString('pt-BR', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-  return amountCents < 0 ? `-${formatted}` : formatted
-}
-
-function formatUnsignedAmountInput(amountCents: number): string {
-  return (Math.abs(amountCents) / 100).toLocaleString('pt-BR', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-}
-
-function parseSignedBRLInputToCents(value: string): number | null {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return null
-  }
-  let body = trimmed
-  const negative = body.startsWith('-')
-  if (negative) {
-    body = body.slice(1).trim()
-  }
-  if (!body) {
-    return null
-  }
-  let amount: number
-  if (body.includes(',')) {
-    amount = Number(body.replace(/\./g, '').replace(',', '.'))
-  } else {
-    amount = Number(body)
-  }
-  if (!Number.isFinite(amount)) {
-    return null
-  }
-  const cents = Math.round(amount * 100)
-  return negative ? -cents : cents
-}
-
-function parseUnsignedBRLInputToCents(value: string): number | null {
-  const signed = parseSignedBRLInputToCents(value)
-  if (signed === null) {
-    return null
-  }
-  return Math.abs(signed)
-}
-
 function formatMoney(amountCents: number, currencyCode: string): string {
   const code = currencyCode.trim().toUpperCase() || 'BRL'
   try {
@@ -306,8 +265,8 @@ function isForeignCurrency(currencyCode: string | null | undefined): boolean {
 function PluggyAmountDisplay({
   pluggy,
   className,
-  editableValue,
-  onEditableChange,
+  editableCents,
+  onEditableCentsChange,
   disabled = false,
 }: {
   pluggy: Pick<
@@ -318,23 +277,25 @@ function PluggyAmountDisplay({
     | 'amountInAccountCurrencyCents'
   >
   className?: string
-  /** When set with onEditableChange, the BRL amount becomes an inline editor. */
-  editableValue?: string
-  onEditableChange?: (value: string) => void
+  /** When set with onEditableCentsChange, the BRL amount becomes an inline editor. */
+  editableCents?: number | null
+  onEditableCentsChange?: (cents: number | null) => void
   disabled?: boolean
 }) {
   const foreign = isForeignCurrency(pluggy.currencyCode)
   const currency = (pluggy.currencyCode ?? 'BRL').toUpperCase()
   const editable =
-    editableValue !== undefined && typeof onEditableChange === 'function'
-  const parsedEditable = editable
-    ? parseSignedBRLInputToCents(editableValue)
-    : null
-  const effectiveCents = parsedEditable ?? pluggy.organizzeAmountCents
+    editableCents !== undefined && typeof onEditableCentsChange === 'function'
+  const effectiveCents = editable
+    ? (editableCents ?? pluggy.organizzeAmountCents)
+    : pluggy.organizzeAmountCents
   const signClass = effectiveCents < 0 ? 'neg' : effectiveCents > 0 ? 'pos' : ''
   const inputSize = Math.min(
     12,
-    Math.max(4, (editableValue ?? '').trim().length || 4),
+    Math.max(
+      4,
+      formatBrlFromCents(effectiveCents, true).length || 4,
+    ),
   )
 
   if (foreign) {
@@ -347,15 +308,15 @@ function PluggyAmountDisplay({
         {editable ? (
           <label className="recon-amount-edit">
             <span className="recon-amount-fx">≈ R$</span>
-            <input
+            <MoneyInput
               className="recon-amount-input"
-              value={editableValue}
+              valueCents={editableCents}
               size={inputSize}
               disabled={disabled}
-              inputMode="decimal"
+              allowNegative
               aria-label="Valor no Organizze ao vincular"
               title="Valor no Organizze ao vincular"
-              onChange={(event) => onEditableChange(event.target.value)}
+              onChangeCents={onEditableCentsChange}
             />
           </label>
         ) : pluggy.amountInAccountCurrencyCents !== null &&
@@ -377,14 +338,14 @@ function PluggyAmountDisplay({
         <span className="recon-amount-currency" aria-hidden>
           R$
         </span>
-        <input
+        <MoneyInput
           className="recon-amount-input"
-          value={editableValue}
+          valueCents={editableCents}
           size={inputSize}
           disabled={disabled}
-          inputMode="decimal"
+          allowNegative
           aria-label="Valor no Organizze ao vincular"
-          onChange={(event) => onEditableChange(event.target.value)}
+          onChangeCents={onEditableCentsChange}
         />
       </label>
     )
@@ -766,13 +727,17 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [createItem, setCreateItem] = useState<ReconciliationQueueItem | null>(
     null,
   )
+  const [cardLendItem, setCardLendItem] =
+    useState<ReconciliationQueueItem | null>(null)
   const [searchItem, setSearchItem] = useState<ReconciliationQueueItem | null>(
     null,
   )
   const [searchQuery, setSearchQuery] = useState('')
   const [searchRows, setSearchRows] = useState<OrganizzeTransactionRow[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
-  const [searchLinkAmount, setSearchLinkAmount] = useState('')
+  const [searchLinkAmountCents, setSearchLinkAmountCents] = useState<
+    number | null
+  >(null)
   const [searchAccountKey, setSearchAccountKey] = useState('')
   const [searchLinkAccountId, setSearchLinkAccountId] = useState('')
   const [searchKind, setSearchKind] = useState<'all' | 'account' | 'credit_card'>(
@@ -781,7 +746,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const [searchCategoryId, setSearchCategoryId] = useState('')
   const [searchPaid, setSearchPaid] = useState<'all' | 'open' | 'paid'>('all')
   const [linkAmountInputs, setLinkAmountInputs] = useState<
-    Record<string, string>
+    Record<string, number>
   >({})
   const [ignoredOpen, setIgnoredOpen] = useState(false)
   const [ignoredItems, setIgnoredItems] = useState<IgnoredItem[]>([])
@@ -794,7 +759,9 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     useState<ReconciliationQueueItem | null>(null)
   const [restoringId, setRestoringId] = useState<string | null>(null)
   const [importDescription, setImportDescription] = useState('')
-  const [importAmount, setImportAmount] = useState('')
+  const [importAmountCents, setImportAmountCents] = useState<number | null>(
+    null,
+  )
   const [importCategoryId, setImportCategoryId] = useState('')
   const [importTags, setImportTags] = useState<string[]>([])
   const [organizzeTags, setOrganizzeTags] = useState<TagOption[]>([])
@@ -914,6 +881,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     action?.kind === 'import' ||
     action?.kind === 'invoice' ||
     action?.kind === 'transfer' ||
+    action?.kind === 'card-lend' ||
     (Boolean(searchItem) && action?.kind === 'link')
 
   const createSelectedInvoice = useMemo(() => {
@@ -1240,19 +1208,21 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
   const linkAmountForItem = useCallback(
     (item: ReconciliationQueueItem) =>
-      linkAmountInputs[item.pluggy.id] ??
-      formatSignedAmountInput(item.pluggy.organizzeAmountCents),
+      linkAmountInputs[item.pluggy.id] ?? item.pluggy.organizzeAmountCents,
     [linkAmountInputs],
   )
 
-  const setLinkAmountForItem = (pluggyId: string, value: string) => {
-    setLinkAmountInputs((prev) => ({ ...prev, [pluggyId]: value }))
+  const setLinkAmountForItem = (pluggyId: string, cents: number | null) => {
+    setLinkAmountInputs((prev) => ({
+      ...prev,
+      [pluggyId]: cents ?? 0,
+    }))
   }
 
   const openInvoicePaymentModal = (item: ReconciliationQueueItem) => {
     setCreateItem(item)
     setImportDescription(item.pluggy.description)
-    setImportAmount(formatSignedAmountInput(item.pluggy.organizzeAmountCents))
+    setImportAmountCents(item.pluggy.organizzeAmountCents)
     setImportCategoryId('')
     setInvoiceCardId('')
     setInvoiceId('')
@@ -1365,10 +1335,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         ? item.pluggy.description || 'Transferência entre contas'
         : item.pluggy.description,
     )
-    setImportAmount(
+    setImportAmountCents(
       isSamePersonTransfer(item.pluggy)
-        ? formatUnsignedAmountInput(item.pluggy.organizzeAmountCents)
-        : formatSignedAmountInput(item.pluggy.organizzeAmountCents),
+        ? Math.abs(item.pluggy.organizzeAmountCents)
+        : item.pluggy.organizzeAmountCents,
     )
     applyHistoryDefaults(item)
     setInvoiceCardId('')
@@ -1417,7 +1387,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   const openSearchModal = (item: ReconciliationQueueItem) => {
     setSearchItem(item)
     setSearchQuery('')
-    setSearchLinkAmount(linkAmountForItem(item))
+    setSearchLinkAmountCents(linkAmountForItem(item))
     setSearchAccountKey(accountFilterKey(item.pluggy))
     setSearchLinkAccountId(
       item.pluggy.mappedTargetType === 'account'
@@ -1616,6 +1586,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     const ids = Array.isArray(pluggyIds) ? pluggyIds : [pluggyIds]
     removeFromQueue(...ids)
     setCreateItem(null)
+    setCardLendItem(null)
     setSearchItem(null)
     setAction(null)
     setStatusMessage(successMessage)
@@ -1674,7 +1645,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   }
 
   const importTx = async (item: ReconciliationQueueItem) => {
-    const amountCents = parseSignedBRLInputToCents(importAmount)
+    const amountCents = importAmountCents
     if (amountCents === null || amountCents === 0) {
       onError('Informe um valor válido para o Organizze')
       return
@@ -1768,7 +1739,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
   }
 
   const transferTx = async (item: ReconciliationQueueItem) => {
-    const amountCents = parseUnsignedBRLInputToCents(importAmount)
+    const amountCents =
+      importAmountCents === null ? null : Math.abs(importAmountCents)
     if (amountCents === null || amountCents <= 0) {
       onError('Informe um valor válido para a transferência')
       return
@@ -1867,6 +1839,50 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
       void loadIgnored()
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Erro ao ignorar')
+      setAction(null)
+    }
+  }
+
+  const submitCardLend = async (
+    item: ReconciliationQueueItem,
+    payload: {
+      creditCardId: number
+      creditCardInvoiceId: number
+      description: string
+      myAmountCents: number
+      myCategoryId: number | null
+      peopleCategoryId: number
+      receiveAccountId: number
+      receiveCategoryId: number
+      receiveDate: string
+      people: Array<{ name: string; amountCents: number }>
+    },
+  ) => {
+    setAction({
+      pluggyId: item.pluggy.id,
+      kind: 'card-lend',
+      candidateId: null,
+      phase: 'working',
+      message: 'Criando rateio no Organizze…',
+    })
+    onError(null)
+    try {
+      await apiFetch(`/api/reconciliation/${item.pluggy.id}/card-lend`, {
+        method: 'POST',
+        body: JSON.stringify({
+          from: range.from,
+          to: range.to,
+          ...payload,
+        }),
+      })
+      await finishAction(
+        item.pluggy.id,
+        `Rateio criado: ${payload.people.length} pessoa(s) + sua parte.`,
+      )
+    } catch (err) {
+      onError(
+        err instanceof Error ? err.message : 'Erro ao criar rateio do cartão',
+      )
       setAction(null)
     }
   }
@@ -2178,10 +2194,10 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   </div>
                   <PluggyAmountDisplay
                     pluggy={item.pluggy}
-                    editableValue={linkAmountForItem(item)}
+                    editableCents={linkAmountForItem(item)}
                     disabled={anyBusy}
-                    onEditableChange={(value) =>
-                      setLinkAmountForItem(item.pluggy.id, value)
+                    onEditableCentsChange={(cents) =>
+                      setLinkAmountForItem(item.pluggy.id, cents)
                     }
                   />
                 </div>
@@ -2389,14 +2405,8 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                                 className="btn"
                                 disabled={anyBusy}
                                 onClick={() => {
-                                  const amountCents =
-                                    parseSignedBRLInputToCents(
-                                      linkAmountForItem(item),
-                                    )
-                                  if (
-                                    amountCents === null ||
-                                    amountCents === 0
-                                  ) {
+                                  const amountCents = linkAmountForItem(item)
+                                  if (amountCents === 0) {
                                     onError(
                                       'Informe um valor válido para o Organizze',
                                     )
@@ -2461,6 +2471,20 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                             ? `Criar parcelada (${remainingInstallments(item.pluggy.installmentNumber, item.pluggy.totalInstallments)}x)`
                             : 'Criar lançamento'}
                       </button>
+                      {item.pluggy.kind === 'credit_purchase' ? (
+                        <button
+                          type="button"
+                          className="btn ghost"
+                          disabled={anyBusy}
+                          onClick={() => {
+                            onError(null)
+                            setCardLendItem(item)
+                            void loadInvoices(item.pluggy.mappedOrganizzeTargetId)
+                          }}
+                        >
+                          Emprestei o cartão
+                        </button>
+                      ) : null}
                     </>
                   )}
                   <button
@@ -2502,10 +2526,48 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         />
       ) : null}
 
+      {cardLendItem ? (
+        <CardLendModal
+          pluggy={cardLendItem.pluggy}
+          cardName={
+            creditCards.find(
+              (card) =>
+                card.id === cardLendItem.pluggy.mappedOrganizzeTargetId,
+            )?.name ?? formatPluggyAccountLabel(cardLendItem.pluggy)
+          }
+          invoices={
+            invoicesByCard[cardLendItem.pluggy.mappedOrganizzeTargetId] ?? []
+          }
+          accounts={organizzeAccounts}
+          creditCards={creditCards}
+          categories={categories}
+          busy={modalBusy && action?.kind === 'card-lend'}
+          onClose={() => {
+            if (action?.kind === 'card-lend') {
+              return
+            }
+            setCardLendItem(null)
+          }}
+          onOpenInvoices={() => {
+            void loadInvoices(cardLendItem.pluggy.mappedOrganizzeTargetId)
+          }}
+          onError={onError}
+          onSubmit={(payload) => void submitCardLend(cardLendItem, payload)}
+        />
+      ) : null}
+
       {createItem ? (
         <BottomSheet
           onClose={closeCreateModal}
           busy={modalBusy}
+          busyLabel={
+            action?.kind === 'invoice'
+              ? 'Registrando pagamento…'
+              : action?.kind === 'transfer'
+                ? 'Registrando transferência…'
+                : 'Criando lançamento…'
+          }
+          busyHint={action?.message}
           labelledBy="create-tx-title"
           title={
             createIsTransfer
@@ -2526,20 +2588,6 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   : 'Confira destino, valor e data antes de enviar ao Organizze.'
           }
         >
-          {modalBusy ? (
-            <div className="modal-loading" role="status">
-              <span className="spinner lg" aria-hidden />
-              <strong>
-                {action?.kind === 'invoice'
-                  ? 'Registrando pagamento…'
-                  : action?.kind === 'transfer'
-                    ? 'Registrando transferência…'
-                    : 'Criando lançamento…'}
-              </strong>
-              <p>{action?.message}</p>
-            </div>
-          ) : null}
-
             <div className="settings-form modal-body">
               <div className="create-destination" aria-label="Resumo do lançamento">
                 <div className="create-destination-row">
@@ -2727,11 +2775,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                 {createIsTransfer
                   ? 'Valor da transferência (R$)'
                   : 'Valor no Organizze (R$)'}
-                <input
-                  value={importAmount}
+                <MoneyInput
+                  valueCents={importAmountCents}
                   disabled={modalBusy}
-                  inputMode="decimal"
-                  onChange={(event) => setImportAmount(event.target.value)}
+                  allowNegative={!createIsTransfer}
+                  onChangeCents={setImportAmountCents}
                 />
               </label>
 
@@ -2763,7 +2811,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                       categories={categories}
                       value={importCategoryId}
                       amountCents={
-                        parseSignedBRLInputToCents(importAmount) ??
+                        importAmountCents ??
                         createItem.pluggy.organizzeAmountCents
                       }
                       disabled={modalBusy}
@@ -2863,18 +2911,16 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         <BottomSheet
           onClose={closeSearchModal}
           busy={modalBusy || searchLoading}
+          busyLabel={modalBusy ? 'Vinculando…' : 'Buscando…'}
+          busyHint={
+            modalBusy
+              ? (action?.message ?? 'Atualizando Organizze.')
+              : undefined
+          }
           labelledBy="search-link-title"
           title="Buscar lançamento"
           subtitle="Busque por descrição, categoria ou tipo — o valor não precisa ser igual. Ao vincular, você define o valor no Organizze."
         >
-          {modalBusy ? (
-            <div className="modal-loading" role="status">
-              <span className="spinner lg" aria-hidden />
-              <strong>Vinculando…</strong>
-              <p>{action?.message ?? 'Atualizando Organizze.'}</p>
-            </div>
-          ) : null}
-
           <div className="settings-form modal-body">
             <div className="create-destination">
               <div className="create-destination-row">
@@ -2988,11 +3034,11 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
 
             <label>
               Valor no Organizze ao vincular (R$)
-              <input
-                value={searchLinkAmount}
+              <MoneyInput
+                valueCents={searchLinkAmountCents}
                 disabled={modalBusy || searchLoading}
-                inputMode="decimal"
-                onChange={(event) => setSearchLinkAmount(event.target.value)}
+                allowNegative
+                onChangeCents={setSearchLinkAmountCents}
               />
             </label>
 
@@ -3138,9 +3184,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                             className="btn"
                             disabled={modalBusy}
                             onClick={() => {
-                              const amountCents = parseSignedBRLInputToCents(
-                                searchLinkAmount,
-                              )
+                              const amountCents = searchLinkAmountCents
                               if (amountCents === null || amountCents === 0) {
                                 onError(
                                   'Informe um valor válido para o Organizze',

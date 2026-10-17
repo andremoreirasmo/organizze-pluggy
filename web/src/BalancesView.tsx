@@ -6,6 +6,7 @@ import {
   formatInvoiceDate,
   formatInvoiceMonthTitle,
 } from './InvoicePicker'
+import { MoneyInput } from './MoneyInput.tsx'
 import { PullToRefresh } from './PullToRefresh'
 
 export type BalanceSnapshotSource = {
@@ -190,19 +191,6 @@ function writeExcludeFutureOzPreference(value: boolean): void {
   }
 }
 
-function parseBRLInput(value: string): number | null {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return null
-  }
-  if (trimmed.includes(',')) {
-    const normalized = Number(trimmed.replace(/\./g, '').replace(',', '.'))
-    return Number.isFinite(normalized) ? normalized : null
-  }
-  const normalized = Number(trimmed)
-  return Number.isFinite(normalized) ? normalized : null
-}
-
 function applySourceIncludedLocally(
   current: BalanceSnapshotResponse,
   organizzeAccountId: number,
@@ -240,7 +228,9 @@ export function BalancesView({ apiFetch, onError }: Props) {
   const [adjustRow, setAdjustRow] = useState<BalanceSnapshotRow | null>(null)
   const [adjustInvoiceRow, setAdjustInvoiceRow] =
     useState<InvoiceBalanceRow | null>(null)
-  const [adjustAmount, setAdjustAmount] = useState('')
+  const [adjustAmountCents, setAdjustAmountCents] = useState<number | null>(
+    null,
+  )
   const [adjustDate, setAdjustDate] = useState(todayISO)
   const [adjustDescription, setAdjustDescription] = useState('')
   const [adjustCategoryId, setAdjustCategoryId] = useState('')
@@ -452,7 +442,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
   const openAdjust = (row: BalanceSnapshotRow) => {
     setAdjustInvoiceRow(null)
     setAdjustRow(row)
-    setAdjustAmount((row.diffCents / 100).toFixed(2))
+    setAdjustAmountCents(row.diffCents)
     setAdjustDate(todayISO())
     setAdjustDescription(
       row.diffCents > 0
@@ -473,7 +463,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
     const suggestedCents = -row.diffCents
     setAdjustRow(null)
     setAdjustInvoiceRow(row)
-    setAdjustAmount((suggestedCents / 100).toFixed(2))
+    setAdjustAmountCents(suggestedCents)
     setAdjustDate(row.invoiceDueDate ?? todayISO())
     setAdjustDescription(
       suggestedCents < 0
@@ -580,12 +570,11 @@ export function BalancesView({ apiFetch, onError }: Props) {
     if (!adjustRow) {
       return
     }
-    const parsed = parseBRLInput(adjustAmount)
-    if (parsed === null || parsed === 0) {
+    const amountCents = adjustAmountCents
+    if (amountCents === null || amountCents === 0) {
       onError('Informe um valor diferente de zero')
       return
     }
-    const amountCents = Math.round(parsed * 100)
     setSaving(true)
     onError(null)
     try {
@@ -624,12 +613,11 @@ export function BalancesView({ apiFetch, onError }: Props) {
     if (!adjustInvoiceRow || adjustInvoiceRow.invoiceId === null) {
       return
     }
-    const parsed = parseBRLInput(adjustAmount)
-    if (parsed === null || parsed === 0) {
+    const amountCents = adjustAmountCents
+    if (amountCents === null || amountCents === 0) {
       onError('Informe um valor diferente de zero')
       return
     }
-    const amountCents = Math.round(parsed * 100)
     setSaving(true)
     onError(null)
     try {
@@ -1128,18 +1116,12 @@ export function BalancesView({ apiFetch, onError }: Props) {
         <BottomSheet
           onClose={closeAdjust}
           busy={saving}
+          busyLabel="Criando ajuste…"
+          busyHint="Lançamento no Organizze para alinhar o saldo."
           labelledBy="adjust-balance-title"
           title="Ajustar saldo"
           subtitle={`Cria um lançamento pago em “${adjustRow.organizzeAccountName}” para aproximar o saldo do Open Finance.`}
         >
-          {saving ? (
-            <div className="modal-loading" role="status">
-              <span className="spinner lg" aria-hidden />
-              <strong>Criando ajuste…</strong>
-              <p>Lançamento no Organizze para alinhar o saldo.</p>
-            </div>
-          ) : null}
-
           <div className="settings-form modal-body">
             <div className="create-destination">
               <div className="create-destination-row">
@@ -1167,11 +1149,11 @@ export function BalancesView({ apiFetch, onError }: Props) {
 
             <label>
               Valor do ajuste (R$)
-              <input
-                value={adjustAmount}
+              <MoneyInput
+                valueCents={adjustAmountCents}
                 disabled={saving}
-                inputMode="decimal"
-                onChange={(event) => setAdjustAmount(event.target.value)}
+                allowNegative
+                onChangeCents={setAdjustAmountCents}
               />
             </label>
 
@@ -1201,9 +1183,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
               <CategoryPicker
                 categories={categories}
                 value={adjustCategoryId}
-                amountCents={Math.round(
-                  (parseBRLInput(adjustAmount) ?? 0) * 100,
-                )}
+                amountCents={adjustAmountCents ?? 0}
                 disabled={saving}
                 onChange={setAdjustCategoryId}
               />
@@ -1248,18 +1228,12 @@ export function BalancesView({ apiFetch, onError }: Props) {
         <BottomSheet
           onClose={closeAdjust}
           busy={saving}
+          busyLabel="Criando ajuste…"
+          busyHint="Lançamento na fatura do Organizze."
           labelledBy="adjust-invoice-title"
           title="Ajustar fatura"
           subtitle={`Cria um lançamento no cartão “${adjustInvoiceRow.organizzeCreditCardName}” para alinhar o total da fatura com o Open Finance. Valor negativo = despesa; positivo = crédito.`}
         >
-          {saving ? (
-            <div className="modal-loading" role="status">
-              <span className="spinner lg" aria-hidden />
-              <strong>Criando ajuste…</strong>
-              <p>Lançamento na fatura do Organizze.</p>
-            </div>
-          ) : null}
-
           <div className="settings-form modal-body">
             <div className="create-destination">
               <div className="create-destination-row">
@@ -1294,11 +1268,11 @@ export function BalancesView({ apiFetch, onError }: Props) {
 
             <label>
               Valor do lançamento (R$)
-              <input
-                value={adjustAmount}
+              <MoneyInput
+                valueCents={adjustAmountCents}
                 disabled={saving}
-                inputMode="decimal"
-                onChange={(event) => setAdjustAmount(event.target.value)}
+                allowNegative
+                onChangeCents={setAdjustAmountCents}
               />
               <small className="field-hint">
                 Prefill = −diff (despesa se a fatura OF for maior).
@@ -1331,9 +1305,7 @@ export function BalancesView({ apiFetch, onError }: Props) {
               <CategoryPicker
                 categories={categories}
                 value={adjustCategoryId}
-                amountCents={Math.round(
-                  (parseBRLInput(adjustAmount) ?? 0) * 100,
-                )}
+                amountCents={adjustAmountCents ?? 0}
                 disabled={saving}
                 onChange={setAdjustCategoryId}
               />

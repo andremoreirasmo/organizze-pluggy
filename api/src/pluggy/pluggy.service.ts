@@ -93,6 +93,31 @@ const ITEM_SYNC_TERMINAL_STATUSES = new Set([
 const ITEM_SYNC_POLL_MS = 2500;
 const ITEM_SYNC_TIMEOUT_MS = 90_000;
 
+function isPluggyTransactionNotFound(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const record = error as {
+    code?: unknown;
+    message?: unknown;
+    response?: { statusCode?: unknown; body?: { code?: unknown } };
+  };
+  if (record.code === 404 || record.code === 'TRANSACTION_NOT_FOUND') {
+    return true;
+  }
+  if (record.response?.statusCode === 404) {
+    return true;
+  }
+  if (record.response?.body?.code === 'TRANSACTION_NOT_FOUND') {
+    return true;
+  }
+  const message = typeof record.message === 'string' ? record.message : '';
+  return (
+    /TRANSACTION_NOT_FOUND/i.test(message) ||
+    /Transaction not found/i.test(message)
+  );
+}
+
 type InstitutionSnapshot = {
   connectorId: number | null;
   connectorName: string | null;
@@ -555,6 +580,12 @@ export class PluggyService {
     try {
       return await this.client.fetchTransaction(transactionId);
     } catch (error) {
+      if (isPluggyTransactionNotFound(error)) {
+        this.logger.debug(
+          `Pluggy transaction ${transactionId} not found (gone or rotated)`,
+        );
+        return null;
+      }
       this.logger.warn(
         `Could not fetch Pluggy transaction ${transactionId}: ${String(error)}`,
       );
