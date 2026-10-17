@@ -69,11 +69,26 @@ export type MatchCandidate = {
   score: number;
   amountDiffCents: number;
   daysDiff: number;
+  /** True when boosted by a past reconciliation pattern. */
+  fromHistory?: boolean;
+};
+
+export type HistorySuggestion = {
+  source: 'imported' | 'linked' | 'mixed';
+  confidence: number;
+  occurrences: number;
+  samplePluggyDescription: string;
+  categoryId: number | null;
+  categoryName: string | null;
+  tags: string[];
+  suggestedOrganizzeDescription: string | null;
+  preferredOrganizzeDescription: string | null;
 };
 
 export type ReconciliationQueueItem = {
   pluggy: QueuePluggyTransaction;
   suggestions: MatchCandidate[];
+  historySuggestion: HistorySuggestion | null;
 };
 
 export type ReconciliationQueueResponse = {

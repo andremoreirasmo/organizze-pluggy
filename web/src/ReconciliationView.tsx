@@ -61,6 +61,7 @@ export type MatchCandidate = {
   score: number
   amountDiffCents: number
   daysDiff: number
+  fromHistory?: boolean
 }
 
 export type QueuePluggyTransaction = {
@@ -90,9 +91,22 @@ export type QueuePluggyTransaction = {
   transferCounterpart: TransferCounterpartHint | null
 }
 
+export type HistorySuggestion = {
+  source: 'imported' | 'linked' | 'mixed'
+  confidence: number
+  occurrences: number
+  samplePluggyDescription: string
+  categoryId: number | null
+  categoryName: string | null
+  tags: string[]
+  suggestedOrganizzeDescription: string | null
+  preferredOrganizzeDescription: string | null
+}
+
 export type ReconciliationQueueItem = {
   pluggy: QueuePluggyTransaction
   suggestions: MatchCandidate[]
+  historySuggestion?: HistorySuggestion | null
 }
 
 export type ReconciliationQueueResponse = {
@@ -1286,6 +1300,25 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
     }
   }, [apiFetch, organizzeTagsLoaded])
 
+  const applyHistoryDefaults = (item: ReconciliationQueueItem) => {
+    const hint = item.historySuggestion
+    if (!hint) {
+      setImportCategoryId('')
+      setImportTags([])
+      return
+    }
+    setImportCategoryId(
+      hint.categoryId != null ? String(hint.categoryId) : '',
+    )
+    setImportTags(hint.tags)
+    if (
+      hint.suggestedOrganizzeDescription &&
+      !isSamePersonTransfer(item.pluggy)
+    ) {
+      setImportDescription(hint.suggestedOrganizzeDescription)
+    }
+  }
+
   const openCreateModal = (item: ReconciliationQueueItem) => {
     if (isInvoicePaymentItem(item.pluggy)) {
       openInvoicePaymentModal(item)
@@ -1302,8 +1335,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
         ? formatUnsignedAmountInput(item.pluggy.organizzeAmountCents)
         : formatSignedAmountInput(item.pluggy.organizzeAmountCents),
     )
-    setImportCategoryId('')
-    setImportTags([])
+    applyHistoryDefaults(item)
     setInvoiceCardId('')
     setInvoiceId('')
     setInvoicePaymentAccountId(
@@ -2146,6 +2178,40 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                   </div>
                 ) : null}
 
+                {!invoicePayment &&
+                !isSamePersonTransfer(item.pluggy) &&
+                item.historySuggestion ? (
+                  <div className="suggestions history-hint">
+                    <div className="suggestions-head is-row">
+                      <strong>Com base em conciliações anteriores</strong>
+                      <span className="match-hint suggestions-info">
+                        {item.historySuggestion.occurrences}×
+                      </span>
+                    </div>
+                    <p className="history-hint-summary">
+                      {[
+                        item.historySuggestion.categoryName,
+                        item.historySuggestion.tags.length > 0
+                          ? item.historySuggestion.tags.join(', ')
+                          : null,
+                        item.historySuggestion.suggestedOrganizzeDescription,
+                      ]
+                        .filter((part): part is string => Boolean(part))
+                        .join(' · ') || item.historySuggestion.samplePluggyDescription}
+                    </p>
+                    <div className="history-hint-actions">
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={anyBusy}
+                        onClick={() => openCreateModal(item)}
+                      >
+                        Criar assim
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
                 {!invoicePayment && item.suggestions.length > 0 ? (
                   <div className="suggestions">
                     <div className="suggestions-head is-row">
@@ -2190,6 +2256,7 @@ export function ReconciliationView({ apiFetch, onError }: Props) {
                             : null,
                           candidate.paid ? null : 'em aberto',
                           candidate.recurring ? 'fixo' : null,
+                          candidate.fromHistory ? 'padrão anterior' : null,
                         ].filter((part): part is string => Boolean(part))
                         const amountClass =
                           candidate.amountCents < 0

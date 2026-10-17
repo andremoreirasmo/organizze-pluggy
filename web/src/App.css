@@ -1952,6 +1952,28 @@
   margin-top: 0.15rem;
 }
 
+.history-hint {
+  border-color: #d8e7d4;
+  background: linear-gradient(
+    180deg,
+    rgba(47, 158, 68, 0.06),
+    transparent 70%
+  );
+}
+
+.history-hint-summary {
+  margin: 0.15rem 0 0.55rem;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  color: var(--oz-muted);
+}
+
+.history-hint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 .no-suggestions {
   margin: 0;
   color: var(--oz-muted);

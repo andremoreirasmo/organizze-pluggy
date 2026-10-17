@@ -27,6 +27,11 @@ import {
 } from '../settings/settings.types';
 import { startPerf } from '../common/perf';
 import {
+  buildHistorySuggestion,
+  historyLinkScoreBonus,
+  type HistoryDecisionSample,
+} from './reconciliation-history';
+import {
   MatchCandidate,
   QueuePluggyTransaction,
   ReconciliationKind,
@@ -62,6 +67,9 @@ export type DecisionSnapshot = {
   /** Lançamento fixo/recorrente no Organizze (desfazer = não pago). */
   organizzeRecurring: boolean | null;
   wasPaidBeforeLink: boolean | null;
+  organizzeCategoryId: number | null;
+  organizzeCategoryName: string | null;
+  organizzeTags: string[] | null;
 };
 
 /** @deprecated alias — same shape used by ignore list */
@@ -104,6 +112,188 @@ export class ReconciliationService {
     private readonly organizze: OrganizzeService,
     private readonly pluggy: PluggyService,
   ) {}
+
+  /**
+   * One-shot backfill: enrich past ReviewDecision snapshots with category/tags
+   * from Organizze (via [pluggy:…] notes and organizzeTransactionId).
+   * Enables history suggestions from reconciliations already done.
+   */
+  async backfillHistorySnapshots(options?: {
+    /** Re-fetch even when category is already present. */
+    force?: boolean;
+    /** Max fallback getTransaction calls for ids missing from the bulk list. */
+    maxGetTransactionFallbacks?: number;
+  }): Promise<{
+    examined: number;
+    updated: number;
+    skipped: number;
+    missingOrganizze: number;
+    fallbackFetched: number;
+    ozIndexed: number;
+  }> {
+    const force = options?.force === true;
+    const maxFallbacks = options?.maxGetTransactionFallbacks ?? 80;
+
+    const rows = await this.prisma.reviewDecision.findMany({
+      where: {
+        decision: {
+          in: [ReviewDecisionType.IMPORTED, ReviewDecisionType.LINKED],
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        pluggyTransactionId: true,
+        snapshot: true,
+        createdAt: true,
+      },
+    });
+
+    type Pending = {
+      pluggyTransactionId: string;
+      snapshot: DecisionSnapshot;
+    };
+    const pending: Pending[] = [];
+    let skipped = 0;
+
+    for (const row of rows) {
+      const snapshot = this.parseDecisionSnapshot(row.snapshot);
+      if (!snapshot?.description?.trim()) {
+        skipped += 1;
+        continue;
+      }
+      // Category is the main signal for create hints; skip rows already enriched.
+      if (!force && snapshot.organizzeCategoryId != null) {
+        skipped += 1;
+        continue;
+      }
+      pending.push({ pluggyTransactionId: row.pluggyTransactionId, snapshot });
+    }
+
+    if (pending.length === 0) {
+      return {
+        examined: rows.length,
+        updated: 0,
+        skipped,
+        missingOrganizze: 0,
+        fallbackFetched: 0,
+        ozIndexed: 0,
+      };
+    }
+
+    let rangeStart = pending[0].snapshot.date.slice(0, 10);
+    let rangeEnd = rangeStart;
+    for (const item of pending) {
+      const date = item.snapshot.date.slice(0, 10);
+      if (date < rangeStart) {
+        rangeStart = date;
+      }
+      if (date > rangeEnd) {
+        rangeEnd = date;
+      }
+    }
+    rangeStart = this.shiftDate(rangeStart, -40);
+    rangeEnd = this.shiftDate(rangeEnd, 40);
+    const today = new Date().toISOString().slice(0, 10);
+    if (rangeEnd > today) {
+      rangeEnd = today;
+    }
+
+    this.logger.log(
+      `Backfilling recon history: ${pending.length} decisions, Oz window ${rangeStart}..${rangeEnd}`,
+    );
+
+    const [ozTxs, categoryNameById] = await Promise.all([
+      this.organizze.listTransactionsCovering({
+        startDate: rangeStart,
+        endDate: rangeEnd,
+      }),
+      this.loadOrganizzeCategoryNames(),
+    ]);
+
+    const byOzId = new Map<number, OrganizzeTransaction>();
+    const byPluggyId = new Map<string, OrganizzeTransaction>();
+    for (const tx of ozTxs) {
+      byOzId.set(tx.id, tx);
+      for (const pluggyId of this.organizze.extractPluggyIds(tx.notes)) {
+        if (!byPluggyId.has(pluggyId)) {
+          byPluggyId.set(pluggyId, tx);
+        }
+      }
+    }
+
+    let updated = 0;
+    let missingOrganizze = 0;
+    let fallbackFetched = 0;
+
+    for (const item of pending) {
+      let oz =
+        (item.snapshot.organizzeTransactionId != null
+          ? byOzId.get(item.snapshot.organizzeTransactionId)
+          : undefined) ?? byPluggyId.get(item.pluggyTransactionId);
+
+      if (!oz && item.snapshot.organizzeTransactionId != null) {
+        if (fallbackFetched < maxFallbacks) {
+          try {
+            oz = await this.organizze.getTransaction(
+              item.snapshot.organizzeTransactionId,
+            );
+            fallbackFetched += 1;
+            byOzId.set(oz.id, oz);
+          } catch (error) {
+            this.logger.warn(
+              `Backfill getTransaction #${item.snapshot.organizzeTransactionId} failed: ${String(error)}`,
+            );
+          }
+        }
+      }
+
+      if (!oz) {
+        missingOrganizze += 1;
+        continue;
+      }
+
+      const categoryId = oz.category_id;
+      const categoryName =
+        categoryId != null
+          ? (categoryNameById.get(categoryId) ?? null)
+          : null;
+      const tags = this.organizzeTagNames(oz.tags);
+
+      await this.prisma.reviewDecision.update({
+        where: { pluggyTransactionId: item.pluggyTransactionId },
+        data: {
+          snapshot: {
+            ...item.snapshot,
+            organizzeTransactionId:
+              item.snapshot.organizzeTransactionId ?? oz.id,
+            organizzeDescription:
+              oz.description?.trim() || item.snapshot.organizzeDescription,
+            organizzeCategoryId: categoryId,
+            organizzeCategoryName: categoryName,
+            organizzeTags: tags,
+            organizzeLinkedAmountCents:
+              item.snapshot.organizzeLinkedAmountCents ?? oz.amount_cents,
+            organizzeRecurring:
+              item.snapshot.organizzeRecurring ?? oz.recurring,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      updated += 1;
+    }
+
+    this.logger.log(
+      `Backfill done: updated=${updated} missing=${missingOrganizze} fallbacks=${fallbackFetched} ozIndexed=${ozTxs.length}`,
+    );
+
+    return {
+      examined: rows.length,
+      updated,
+      skipped,
+      missingOrganizze,
+      fallbackFetched,
+      ozIndexed: ozTxs.length,
+    };
+  }
 
   async getQueue(from: string, to: string): Promise<ReconciliationQueueResponse> {
     const perf = startPerf(`getQueue ${from}..${to}`);
@@ -154,8 +344,9 @@ export class ReconciliationService {
         this.loadOrganizzeCreditCardNames(),
         this.loadOrganizzeCategoryNames(),
       ]);
+    const historySamples = await this.loadHistorySamples(categoryNameById);
     perf.mark(
-      `organizzePool+lookups n=${organizzePool.length} accounts=${accountNameById.size} cards=${creditCardNameById.size} cats=${categoryNameById.size}`,
+      `organizzePool+lookups n=${organizzePool.length} accounts=${accountNameById.size} cards=${creditCardNameById.size} cats=${categoryNameById.size} history=${historySamples.length}`,
     );
     const linkedPluggyIds = new Set<string>();
     for (const tx of organizzePool) {
@@ -199,6 +390,10 @@ export class ReconciliationService {
           cardNumber,
           resolveCardNickname(map, cardNumber),
         );
+        const historySuggestion = buildHistorySuggestion(
+          queueTx.description,
+          historySamples,
+        );
         const suggestions = this.buildSuggestions(
           queueTx,
           organizzePool,
@@ -207,9 +402,10 @@ export class ReconciliationService {
           accountNameById,
           creditCardNameById,
           categoryNameById,
+          historySuggestion?.preferredOrganizzeDescription ?? null,
         );
 
-        items.push({ pluggy: queueTx, suggestions });
+        items.push({ pluggy: queueTx, suggestions, historySuggestion });
       }
     }
 
@@ -286,9 +482,10 @@ export class ReconciliationService {
     );
     perf.mark('organizze.updateTransaction');
 
-    const [accountNames, cardNames] = await Promise.all([
+    const [accountNames, cardNames, categoryNames] = await Promise.all([
       this.loadOrganizzeAccountNames(),
       this.loadOrganizzeCreditCardNames(),
+      this.loadOrganizzeCategoryNames(),
     ]);
     // Capture Open Finance amounts before any Organizze write so the done
     // card can show OF ≠ Organizze when the user linked with a different value
@@ -296,6 +493,7 @@ export class ReconciliationService {
     const pluggy = queueItem.pluggy;
     const ofAmountCents = pluggy.amountCents;
     const ofOrganizzeAmountCents = pluggy.organizzeAmountCents;
+    const categoryId = updated.category_id ?? existing.category_id ?? null;
     await this.upsertDecision(
       pluggyTxId,
       pluggy.providerId,
@@ -314,6 +512,12 @@ export class ReconciliationService {
           organizzeLinkedAmountCents: updated.amount_cents,
           organizzeRecurring: updated.recurring,
           wasPaidBeforeLink: existing.paid,
+          organizzeCategoryId: categoryId,
+          organizzeCategoryName:
+            categoryId != null
+              ? (categoryNames.get(categoryId) ?? null)
+              : null,
+          organizzeTags: this.organizzeTagNames(updated.tags ?? existing.tags),
         }),
         amountCents: ofAmountCents,
         organizzeAmountCents: ofOrganizzeAmountCents,
@@ -354,9 +558,10 @@ export class ReconciliationService {
         ? body.amountCents
         : pluggy.organizzeAmountCents;
     const tags = normalizeOrganizzeTagNames(body.tags);
-    const [accountNames, cardNames] = await Promise.all([
+    const [accountNames, cardNames, categoryNames] = await Promise.all([
       this.loadOrganizzeAccountNames(),
       this.loadOrganizzeCreditCardNames(),
+      this.loadOrganizzeCategoryNames(),
     ]);
 
     if (pluggy.kind === 'credit_purchase' || body.creditCardId) {
@@ -386,6 +591,7 @@ export class ReconciliationService {
       });
       perf.mark('organizze.createTransaction');
 
+      const categoryId = created.category_id ?? body.categoryId ?? null;
       await this.upsertDecision(
         pluggyTxId,
         pluggy.providerId,
@@ -403,6 +609,15 @@ export class ReconciliationService {
           organizzeLinkedAmountCents: created.amount_cents,
           organizzeRecurring: created.recurring,
           wasPaidBeforeLink: null,
+          organizzeCategoryId: categoryId,
+          organizzeCategoryName:
+            categoryId != null
+              ? (categoryNames.get(categoryId) ?? null)
+              : null,
+          organizzeTags:
+            this.organizzeTagNames(created.tags) ??
+            tags?.map((tag) => tag.name) ??
+            null,
         }),
       );
       perf.mark('upsertDecision');
@@ -434,6 +649,7 @@ export class ReconciliationService {
     });
     perf.mark('organizze.createTransaction');
 
+    const categoryId = created.category_id ?? body.categoryId ?? null;
     await this.upsertDecision(
       pluggyTxId,
       pluggy.providerId,
@@ -451,6 +667,15 @@ export class ReconciliationService {
         organizzeLinkedAmountCents: created.amount_cents,
         organizzeRecurring: created.recurring,
         wasPaidBeforeLink: null,
+        organizzeCategoryId: categoryId,
+        organizzeCategoryName:
+          categoryId != null
+            ? (categoryNames.get(categoryId) ?? null)
+            : null,
+        organizzeTags:
+          this.organizzeTagNames(created.tags) ??
+          tags?.map((tag) => tag.name) ??
+          null,
       }),
     );
     perf.mark('upsertDecision');
@@ -517,6 +742,8 @@ export class ReconciliationService {
       },
     );
 
+    const categoryNames = await this.loadOrganizzeCategoryNames();
+    const categoryId = created.category_id ?? body.categoryId ?? null;
     await this.upsertDecision(
       pluggyTxId,
       pluggy.providerId,
@@ -534,6 +761,12 @@ export class ReconciliationService {
         organizzeLinkedAmountCents: created.amount_cents,
         organizzeRecurring: created.recurring,
         wasPaidBeforeLink: null,
+        organizzeCategoryId: categoryId,
+        organizzeCategoryName:
+          categoryId != null
+            ? (categoryNames.get(categoryId) ?? null)
+            : null,
+        organizzeTags: this.organizzeTagNames(created.tags),
       }),
     );
 
@@ -834,6 +1067,9 @@ export class ReconciliationService {
           organizzeLinkedAmountCents: ozMatch?.amount_cents ?? null,
           organizzeRecurring: ozMatch?.recurring ?? null,
           wasPaidBeforeLink: null,
+          organizzeCategoryId: ozMatch?.category_id ?? null,
+          organizzeCategoryName: null,
+          organizzeTags: this.organizzeTagNames(ozMatch?.tags),
         };
       } else {
         const ozDescription =
@@ -1161,6 +1397,18 @@ export class ReconciliationService {
     return null;
   }
 
+  private organizzeTagNames(
+    tags: Array<{ name: string }> | null | undefined,
+  ): string[] | null {
+    if (!tags || tags.length === 0) {
+      return null;
+    }
+    const names = tags
+      .map((tag) => tag.name.trim())
+      .filter((name) => name.length > 0);
+    return names.length > 0 ? names : null;
+  }
+
   private toDecisionSnapshot(
     pluggy: QueuePluggyTransaction,
     extras?: {
@@ -1171,6 +1419,9 @@ export class ReconciliationService {
       organizzeLinkedAmountCents?: number | null;
       organizzeRecurring?: boolean | null;
       wasPaidBeforeLink?: boolean | null;
+      organizzeCategoryId?: number | null;
+      organizzeCategoryName?: string | null;
+      organizzeTags?: string[] | null;
     },
   ): DecisionSnapshot {
     return {
@@ -1189,6 +1440,9 @@ export class ReconciliationService {
       organizzeLinkedAmountCents: extras?.organizzeLinkedAmountCents ?? null,
       organizzeRecurring: extras?.organizzeRecurring ?? null,
       wasPaidBeforeLink: extras?.wasPaidBeforeLink ?? null,
+      organizzeCategoryId: extras?.organizzeCategoryId ?? null,
+      organizzeCategoryName: extras?.organizzeCategoryName ?? null,
+      organizzeTags: extras?.organizzeTags ?? null,
     };
   }
 
@@ -1259,7 +1513,145 @@ export class ReconciliationService {
         typeof data.wasPaidBeforeLink === 'boolean'
           ? data.wasPaidBeforeLink
           : null,
+      organizzeCategoryId:
+        typeof data.organizzeCategoryId === 'number'
+          ? data.organizzeCategoryId
+          : null,
+      organizzeCategoryName:
+        typeof data.organizzeCategoryName === 'string'
+          ? data.organizzeCategoryName
+          : null,
+      organizzeTags: Array.isArray(data.organizzeTags)
+        ? data.organizzeTags.filter(
+            (tag): tag is string => typeof tag === 'string' && tag.trim() !== '',
+          )
+        : null,
     };
+  }
+
+  private async loadHistorySamples(
+    categoryNameById: Map<number, string>,
+  ): Promise<HistoryDecisionSample[]> {
+    // Use the full local history (backfill enriches older snapshots).
+    const rows = await this.prisma.reviewDecision.findMany({
+      where: {
+        decision: {
+          in: [ReviewDecisionType.IMPORTED, ReviewDecisionType.LINKED],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 5000,
+      select: {
+        decision: true,
+        snapshot: true,
+        createdAt: true,
+        pluggyTransactionId: true,
+      },
+    });
+
+    const samples: HistoryDecisionSample[] = [];
+    const hydrateTargets: Array<{
+      index: number;
+      organizzeTransactionId: number;
+      pluggyTransactionId: string;
+    }> = [];
+
+    for (const row of rows) {
+      if (
+        row.decision !== ReviewDecisionType.IMPORTED &&
+        row.decision !== ReviewDecisionType.LINKED
+      ) {
+        continue;
+      }
+      const snapshot = this.parseDecisionSnapshot(row.snapshot);
+      if (!snapshot?.description?.trim()) {
+        continue;
+      }
+
+      let categoryId = snapshot.organizzeCategoryId;
+      let categoryName =
+        snapshot.organizzeCategoryName ??
+        (categoryId != null
+          ? (categoryNameById.get(categoryId) ?? null)
+          : null);
+      let tags = snapshot.organizzeTags ?? [];
+
+      const sampleIndex = samples.length;
+      samples.push({
+        decision: row.decision,
+        pluggyDescription: snapshot.description,
+        organizzeDescription: snapshot.organizzeDescription,
+        categoryId,
+        categoryName,
+        tags,
+        createdAt: row.createdAt.toISOString(),
+      });
+
+      if (
+        categoryId == null &&
+        snapshot.organizzeTransactionId != null &&
+        hydrateTargets.length < 20
+      ) {
+        hydrateTargets.push({
+          index: sampleIndex,
+          organizzeTransactionId: snapshot.organizzeTransactionId,
+          pluggyTransactionId: row.pluggyTransactionId,
+        });
+      }
+    }
+
+    if (hydrateTargets.length > 0) {
+      await Promise.all(
+        hydrateTargets.map(async (target) => {
+          try {
+            const tx = await this.organizze.getTransaction(
+              target.organizzeTransactionId,
+            );
+            const categoryId = tx.category_id;
+            const categoryName =
+              categoryId != null
+                ? (categoryNameById.get(categoryId) ?? null)
+                : null;
+            const tags = this.organizzeTagNames(tx.tags) ?? [];
+            const sample = samples[target.index];
+            sample.categoryId = categoryId;
+            sample.categoryName = categoryName;
+            sample.tags = tags;
+            if (tx.description?.trim()) {
+              sample.organizzeDescription = tx.description;
+            }
+
+            const existing = await this.prisma.reviewDecision.findUnique({
+              where: { pluggyTransactionId: target.pluggyTransactionId },
+              select: { snapshot: true },
+            });
+            const parsed = this.parseDecisionSnapshot(existing?.snapshot ?? null);
+            if (!parsed) {
+              return;
+            }
+            await this.prisma.reviewDecision.update({
+              where: { pluggyTransactionId: target.pluggyTransactionId },
+              data: {
+                snapshot: {
+                  ...parsed,
+                  organizzeCategoryId: categoryId,
+                  organizzeCategoryName: categoryName,
+                  organizzeTags: tags.length > 0 ? tags : null,
+                  organizzeDescription:
+                    tx.description?.trim() || parsed.organizzeDescription,
+                } as unknown as Prisma.InputJsonValue,
+              },
+            });
+          } catch (error) {
+            this.logger.warn(
+              `Could not hydrate history snapshot for Oz #${target.organizzeTransactionId}: ${String(error)}`,
+            );
+          }
+        }),
+      );
+    }
+
+    return samples;
   }
 
   private async indexOrganizzeTxByPluggyId(
@@ -1413,13 +1805,9 @@ export class ReconciliationService {
   ): Promise<OrganizzeTransaction[]> {
     const byId = new Map<number, OrganizzeTransaction>();
 
-    // Widen the search window so card installments dated near month
-    // boundaries still enter the suggestion pool.
-    const hasCreditMaps = maps.some((map) => map.targetType === 'credit_card');
-    const searchFrom = hasCreditMaps
-      ? this.shiftDate(from, -40)
-      : from;
-    const searchTo = hasCreditMaps ? this.shiftDate(to, 40) : to;
+    // Keep suggestions in the selected month (±5 days for boundary lag).
+    const searchFrom = this.shiftDate(from, -5);
+    const searchTo = this.shiftDate(to, 5);
 
     // Always load the full list — Organizze returns both bank and
     // credit-card transactions here (credit_card_id set for card purchases).
@@ -1448,8 +1836,8 @@ export class ReconciliationService {
       accountIds.map(async (accountId) => {
         try {
           return await this.organizze.listTransactions({
-            startDate: from,
-            endDate: to,
+            startDate: searchFrom,
+            endDate: searchTo,
             accountId,
           });
         } catch (error) {
@@ -1478,7 +1866,9 @@ export class ReconciliationService {
       creditCardIds.map(async (creditCardId) => {
         try {
           const invoices = await this.organizze.listInvoices(creditCardId);
-          const relevant = invoices
+          // Only invoices that touch the suggestion window — avoid dumping
+          // several past bills into the match pool.
+          return invoices
             .filter(
               (invoice) =>
                 this.invoiceOverlapsPeriod(
@@ -1494,21 +1884,12 @@ export class ReconciliationService {
                   searchTo,
                 ),
             )
-            .sort((a, b) => b.date.localeCompare(a.date));
-
-          // Also include nearest invoices around the period (installments may
-          // sit on adjacent bills depending on closing day).
-          const extras = invoices
-            .filter(
-              (invoice) => !relevant.some((item) => item.id === invoice.id),
-            )
             .sort((a, b) => b.date.localeCompare(a.date))
-            .slice(0, 4);
-
-          return [...relevant, ...extras].slice(0, 12).map((invoice) => ({
-            creditCardId,
-            invoiceId: invoice.id,
-          }));
+            .slice(0, 4)
+            .map((invoice) => ({
+              creditCardId,
+              invoiceId: invoice.id,
+            }));
         } catch (error) {
           this.logger.warn(
             `Could not list invoices for card ${creditCardId}: ${String(error)}`,
@@ -1544,7 +1925,11 @@ export class ReconciliationService {
       }
     }
 
-    return [...byId.values()];
+    // Invoice payloads can include older installments; keep only the window.
+    return [...byId.values()].filter((tx) => {
+      const date = tx.date.slice(0, 10);
+      return date >= searchFrom && date <= searchTo;
+    });
   }
 
   private shiftDate(value: string, days: number): string {
@@ -1773,6 +2158,7 @@ export class ReconciliationService {
     accountNameById: Map<number, string>,
     creditCardNameById: Map<number, string>,
     categoryNameById: Map<number, string>,
+    preferredOrganizzeDescription: string | null = null,
   ): MatchCandidate[] {
     const candidates: MatchCandidate[] = [];
 
@@ -1802,7 +2188,7 @@ export class ReconciliationService {
         }
       }
 
-      const score = scoreMatch({
+      const baseScore = scoreMatch({
         pluggyAmountCents: pluggy.organizzeAmountCents,
         pluggyDate: pluggy.date,
         pluggyPurchaseDate: pluggy.purchaseDate,
@@ -1821,9 +2207,15 @@ export class ReconciliationService {
         kind: pluggy.kind,
       });
 
-      if (score === null) {
+      if (baseScore === null) {
         continue;
       }
+
+      const historyBonus = historyLinkScoreBonus(
+        oz.description,
+        preferredOrganizzeDescription,
+      );
+      const score = baseScore + historyBonus;
 
       candidates.push({
         organizzeTransactionId: oz.id,
@@ -1857,11 +2249,15 @@ export class ReconciliationService {
             ? daysBetween(pluggy.purchaseDate, oz.date)
             : Number.POSITIVE_INFINITY,
         ),
+        fromHistory: historyBonus > 0,
       });
     }
 
     return candidates
       .sort((a, b) => {
+        if (a.fromHistory !== b.fromHistory) {
+          return a.fromHistory ? -1 : 1;
+        }
         if (a.amountDiffCents !== b.amountDiffCents) {
           return a.amountDiffCents - b.amountDiffCents;
         }

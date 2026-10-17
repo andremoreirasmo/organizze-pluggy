@@ -20,7 +20,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "prisma:generate": "node --env-file=../.env ./node_modules/prisma/build/index.js generate",
     "prisma:migrate": "node --env-file=../.env ./node_modules/prisma/build/index.js migrate dev",
-    "prisma:deploy": "node --env-file=../.env ./node_modules/prisma/build/index.js migrate deploy"
+    "prisma:deploy": "node --env-file=../.env ./node_modules/prisma/build/index.js migrate deploy",
+    "backfill:recon-history": "node --env-file=../.env ./node_modules/ts-node/dist/bin.js -r tsconfig-paths/register src/scripts/backfill-recon-history.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
