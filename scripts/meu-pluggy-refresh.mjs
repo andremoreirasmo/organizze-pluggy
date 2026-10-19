@@ -101,6 +101,7 @@ async function getStorage() {
 
 /**
  * @typedef {{
+ *   runId: string | null
  *   status: 'idle' | 'running' | 'succeeded' | 'failed'
  *   startedAt: string | null
  *   updatedAt: string
@@ -117,8 +118,13 @@ async function getStorage() {
  * }} ProgressState
  */
 
+const runId =
+  process.env.MEU_PLUGGY_RUN_ID?.trim() ||
+  `cli-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
 /** @type {ProgressState} */
 let progressState = {
+  runId,
   status: 'idle',
   startedAt: null,
   updatedAt: new Date().toISOString(),
@@ -147,6 +153,7 @@ async function writeProgress(patch) {
   progressState = {
     ...progressState,
     ...patch,
+    runId,
     updatedAt: new Date().toISOString(),
   }
   progressState.percent = computePercent(
@@ -640,7 +647,9 @@ async function launchBrowser() {
 
 async function main() {
   log(headed ? 'Modo headed' : 'Modo headless')
+  log(`runId=${runId}`)
   await writeProgress({
+    runId,
     status: 'running',
     startedAt: new Date().toISOString(),
     finishedAt: null,

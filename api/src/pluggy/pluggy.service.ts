@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import {
@@ -27,6 +28,8 @@ import {
 } from './pluggy-accounts';
 
 export type MeuPluggyRefreshProgress = {
+  /** Identifies this execution; clients ignore progress with another runId. */
+  runId: string | null;
   status: 'idle' | 'running' | 'succeeded' | 'failed';
   startedAt: string | null;
   updatedAt: string;
@@ -183,6 +186,7 @@ export class PluggyService {
   private localMeuRefreshChild: ChildProcess | null = null;
   private lastMeuRefreshMode: 'local' | 'cloud' | null = null;
   private lastMeuRefreshExecution: string | null = null;
+  private lastMeuRefreshRunId: string | null = null;
 
   private resolveRepoRoot(): string {
     const candidates = [
@@ -223,8 +227,12 @@ export class PluggyService {
     return stateUri.replace(/[^/]+$/, 'progress.json');
   }
 
-  private buildProgressSeed(message: string): MeuPluggyRefreshProgress {
+  private buildProgressSeed(
+    message: string,
+    runId: string,
+  ): MeuPluggyRefreshProgress {
     return {
+      runId,
       status: 'running',
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -241,18 +249,21 @@ export class PluggyService {
     };
   }
 
-  private writeLocalProgressSeed(message: string): void {
+  private writeLocalProgressSeed(message: string, runId: string): void {
     const filePath = this.localProgressPath();
     mkdirSync(path.dirname(filePath), { recursive: true });
     writeFileSync(
       filePath,
-      JSON.stringify(this.buildProgressSeed(message), null, 2),
+      JSON.stringify(this.buildProgressSeed(message, runId), null, 2),
       'utf8',
     );
   }
 
-  private async writeProgressSeed(message: string): Promise<void> {
-    const seed = this.buildProgressSeed(message);
+  private async writeProgressSeed(
+    message: string,
+    runId: string,
+  ): Promise<void> {
+    const seed = this.buildProgressSeed(message, runId);
     const filePath = this.localProgressPath();
     mkdirSync(path.dirname(filePath), { recursive: true });
     writeFileSync(filePath, JSON.stringify(seed, null, 2), 'utf8');
@@ -317,17 +328,20 @@ export class PluggyService {
     mode: 'local';
     executionName: string;
     job: string;
+    runId: string;
   } {
     if (
       this.localMeuRefreshChild &&
       this.localMeuRefreshChild.exitCode === null &&
-      !this.localMeuRefreshChild.killed
+      !this.localMeuRefreshChild.killed &&
+      this.lastMeuRefreshRunId
     ) {
       return {
         started: true as const,
         mode: 'local' as const,
         executionName: 'local/running',
         job: 'local',
+        runId: this.lastMeuRefreshRunId,
       };
     }
 
@@ -339,10 +353,13 @@ export class PluggyService {
       );
     }
 
-    this.writeLocalProgressSeed('Iniciando sync local…');
+    const runId = randomUUID();
+    this.lastMeuRefreshRunId = runId;
+    this.writeLocalProgressSeed('Iniciando sync local…', runId);
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
       MEU_PLUGGY_PROGRESS_PATH: this.localProgressPath(),
+      MEU_PLUGGY_RUN_ID: runId,
     };
     // Cursor/sandbox often sets PLAYWRIGHT_BROWSERS_PATH to a cache the API
     // process does not share — drop invalid paths so Playwright uses
@@ -381,6 +398,7 @@ export class PluggyService {
       mode: 'local' as const,
       executionName: this.lastMeuRefreshExecution,
       job: 'local',
+      runId,
     };
   }
 
@@ -393,6 +411,7 @@ export class PluggyService {
     mode: 'local' | 'cloud';
     executionName: string;
     job: string;
+    runId: string;
   }> {
     const projectId =
       this.config.get<string>('GCP_PROJECT_ID')?.trim() ||
@@ -418,7 +437,9 @@ export class PluggyService {
       );
     }
 
-    await this.writeProgressSeed('Disparando Job na Cloud Run…');
+    const runId = randomUUID();
+    this.lastMeuRefreshRunId = runId;
+    await this.writeProgressSeed('Disparando Job na Cloud Run…', runId);
 
     const auth = new GoogleAuth({
       scopes: ['https://www.googleapis.com/auth/cloud-platform'],
@@ -440,7 +461,15 @@ export class PluggyService {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        overrides: {
+          containerOverrides: [
+            {
+              env: [{ name: 'MEU_PLUGGY_RUN_ID', value: runId }],
+            },
+          ],
+        },
+      }),
     });
 
     const bodyText = await response.text();
@@ -465,12 +494,15 @@ export class PluggyService {
     const executionName = payload.name ?? `${job}/executions/unknown`;
     this.lastMeuRefreshMode = 'cloud';
     this.lastMeuRefreshExecution = executionName;
-    this.logger.log(`Started Meu Pluggy refresh job: ${executionName}`);
+    this.logger.log(
+      `Started Meu Pluggy refresh job: ${executionName} (runId=${runId})`,
+    );
     return {
       started: true as const,
       mode: 'cloud' as const,
       executionName,
       job,
+      runId,
     };
   }
 
@@ -480,7 +512,10 @@ export class PluggyService {
       if (!parsed || typeof parsed !== 'object' || !parsed.status) {
         return null;
       }
-      return parsed;
+      return {
+        ...parsed,
+        runId: parsed.runId ?? null,
+      };
     } catch {
       return null;
     }
@@ -528,12 +563,29 @@ export class PluggyService {
     const gcsUri = this.progressGcsUri();
     const fromGcs = gcsUri ? await this.readProgressFromGcs(gcsUri) : null;
 
+    const matchesActiveRun = (
+      progress: MeuPluggyRefreshProgress | null,
+    ): MeuPluggyRefreshProgress | null => {
+      if (!progress) {
+        return null;
+      }
+      if (!this.lastMeuRefreshRunId) {
+        return progress;
+      }
+      return progress.runId === this.lastMeuRefreshRunId ? progress : null;
+    };
+
     // Prefer GCS in cloud (Job writes there). Local seed alone would stick on
     // "Disparando Job…" forever after POST on Cloud Run.
+    // Always ignore progress.json from another runId when we know the active one.
+    const activeGcs = matchesActiveRun(fromGcs);
+    const activeLocal = matchesActiveRun(local);
     const picked =
       gcsUri != null
-        ? this.pickFresherProgress(fromGcs, local) ?? fromGcs ?? local
-        : local ?? fromGcs;
+        ? (this.pickFresherProgress(activeGcs, activeLocal) ??
+          activeGcs ??
+          activeLocal)
+        : (activeLocal ?? activeGcs);
 
     if (picked) {
       const mode =
@@ -549,6 +601,7 @@ export class PluggyService {
     }
 
     return {
+      runId: this.lastMeuRefreshRunId,
       status: 'idle',
       startedAt: null,
       updatedAt: new Date().toISOString(),

@@ -69,6 +69,7 @@ type PluggyConnection = {
 type StoredConnection = Omit<PluggyConnection, 'accounts'>
 
 type MeuPluggyRefreshProgress = {
+  runId?: string | null
   status: 'idle' | 'running' | 'succeeded' | 'failed'
   startedAt: string | null
   updatedAt: string
@@ -481,6 +482,7 @@ function App() {
   const [meuRefreshToastOpen, setMeuRefreshToastOpen] = useState(false)
   const [meuRefreshDoneToken, setMeuRefreshDoneToken] = useState(0)
   const meuRefreshTerminalRef = useRef(false)
+  const meuRefreshRunIdRef = useRef<string | null>(null)
   const [expandedMapChildren, setExpandedMapChildren] = useState<
     Record<string, boolean>
   >({})
@@ -1276,7 +1278,9 @@ function App() {
     setMeuRefreshBusy(true)
     setMeuRefreshToastOpen(true)
     meuRefreshTerminalRef.current = false
+    meuRefreshRunIdRef.current = null
     setMeuRefreshProgress({
+      runId: null,
       status: 'running',
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1292,13 +1296,21 @@ function App() {
       results: [],
     })
     try {
-      await apiFetch<{ started: boolean; mode?: string }>(
-        '/api/pluggy/meu-refresh',
-        { method: 'POST' },
+      const started = await apiFetch<{
+        started: boolean
+        mode?: string
+        runId: string
+      }>('/api/pluggy/meu-refresh', { method: 'POST' })
+      meuRefreshRunIdRef.current = started.runId
+      setMeuRefreshProgress((prev) =>
+        prev
+          ? { ...prev, runId: started.runId, message: prev.message }
+          : prev,
       )
     } catch (err) {
       setMeuRefreshToastOpen(false)
       setMeuRefreshProgress(null)
+      meuRefreshRunIdRef.current = null
       setError(
         err instanceof Error
           ? err.message
@@ -1324,8 +1336,23 @@ function App() {
         if (cancelled) {
           return
         }
+        const expectedRunId = meuRefreshRunIdRef.current
+        // Ignore stale progress.json from a previous execution.
+        if (
+          expectedRunId &&
+          status.runId &&
+          status.runId !== expectedRunId
+        ) {
+          return
+        }
+        if (expectedRunId && !status.runId && status.status !== 'running') {
+          return
+        }
         setMeuRefreshProgress(status)
         if (status.status === 'succeeded' || status.status === 'failed') {
+          if (!expectedRunId || status.runId !== expectedRunId) {
+            return
+          }
           if (!meuRefreshTerminalRef.current) {
             meuRefreshTerminalRef.current = true
             setMeuRefreshDoneToken((n) => n + 1)
