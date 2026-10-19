@@ -71,22 +71,29 @@ steps:
   - id: detect-job-changes
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: bash
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - 'CB_REGION=${_REGION}'
+      - 'CB_AR_REPO=${_AR_REPO}'
+      - 'CB_JOB=${_JOB}'
+      - 'CB_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS}'
+      - 'CB_FORCE_JOB_REBUILD=${_FORCE_JOB_REBUILD}'
     args:
       - -c
       - |
         set -euo pipefail
-        JOB_IMAGE_LATEST="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_JOB}:latest"
+        JOB_IMAGE_LATEST="$${CB_REGION}-docker.pkg.dev/$${PROJECT_ID}/$${CB_AR_REPO}/$${CB_JOB}:latest"
         HASH="$$(cat Dockerfile.meu-pluggy-refresh scripts/meu-pluggy-refresh.mjs | sha256sum | awk '{print $$1}')"
         echo "$$HASH" > /workspace/job-source.sha256
         echo "Job source hash: $$HASH"
 
-        if [[ -z "${_MEU_PLUGGY_STORAGE_STATE_GCS}" ]]; then
+        if [[ -z "$${CB_STORAGE_STATE_GCS}" ]]; then
           echo "No MEU_PLUGGY_STORAGE_STATE_GCS - skip Job pipeline."
           echo "false" > /workspace/rebuild-job
           exit 0
         fi
 
-        MARKER="${_MEU_PLUGGY_STORAGE_STATE_GCS%/*}/job-source.sha256"
+        MARKER="$${CB_STORAGE_STATE_GCS%/*}/job-source.sha256"
         PREV=""
         if gcloud storage cat "$$MARKER" > /workspace/job-source.prev 2>/dev/null; then
           PREV="$$(tr -d '[:space:]' < /workspace/job-source.prev)"
@@ -100,7 +107,7 @@ steps:
           IMAGE_EXISTS=true
         fi
 
-        if [[ "${_FORCE_JOB_REBUILD}" == "true" ]]; then
+        if [[ "$${CB_FORCE_JOB_REBUILD}" == "true" ]]; then
           echo "Force Job rebuild (_FORCE_JOB_REBUILD=true)"
           echo "true" > /workspace/rebuild-job
         elif [[ "$$HASH" == "$$PREV" && "$$IMAGE_EXISTS" == "true" ]]; then
@@ -133,37 +140,51 @@ steps:
   - id: deploy-app
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: bash
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - 'CB_REGION=${_REGION}'
+      - 'CB_AR_REPO=${_AR_REPO}'
+      - 'CB_SERVICE=${_SERVICE}'
+      - 'CB_JOB=${_JOB}'
+      - 'CB_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS}'
+      - 'CB_PROGRESS_GCS=${_MEU_PLUGGY_PROGRESS_GCS}'
+      - 'CB_COMMIT_SHA=$COMMIT_SHA'
     args:
       - -c
       - |
         set -euo pipefail
-        APP_IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$COMMIT_SHA"
+        APP_IMAGE="$${CB_REGION}-docker.pkg.dev/$${PROJECT_ID}/$${CB_AR_REPO}/$${CB_SERVICE}:$${CB_COMMIT_SHA}"
         # Image-only deploy keeps existing Cloud Run env/secrets.
-        gcloud run deploy "${_SERVICE}" \
+        gcloud run deploy "$${CB_SERVICE}" \
           --image="$$APP_IMAGE" \
-          --region="${_REGION}" \
+          --region="$${CB_REGION}" \
           --platform=managed \
           --quiet
 
         # Ensure Job trigger env is present (idempotent update).
-        UPDATE_VARS="GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_REGION},MEU_PLUGGY_REFRESH_JOB=${_JOB}"
-        if [[ -n "${_MEU_PLUGGY_STORAGE_STATE_GCS}" ]]; then
-          UPDATE_VARS="$${UPDATE_VARS},MEU_PLUGGY_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS}"
-          PROGRESS_GCS="${_MEU_PLUGGY_PROGRESS_GCS}"
+        UPDATE_VARS="GCP_PROJECT_ID=$${PROJECT_ID},GCP_REGION=$${CB_REGION},MEU_PLUGGY_REFRESH_JOB=$${CB_JOB}"
+        if [[ -n "$${CB_STORAGE_STATE_GCS}" ]]; then
+          UPDATE_VARS="$${UPDATE_VARS},MEU_PLUGGY_STORAGE_STATE_GCS=$${CB_STORAGE_STATE_GCS}"
+          PROGRESS_GCS="$${CB_PROGRESS_GCS}"
           if [[ -z "$$PROGRESS_GCS" ]]; then
-            PROGRESS_GCS="${_MEU_PLUGGY_STORAGE_STATE_GCS}"
-            PROGRESS_GCS="$${PROGRESS_GCS%/storageState.json}/progress.json"
+            PROGRESS_GCS="$${CB_STORAGE_STATE_GCS%/storageState.json}/progress.json"
           fi
           UPDATE_VARS="$${UPDATE_VARS},MEU_PLUGGY_PROGRESS_GCS=$$PROGRESS_GCS"
         fi
-        gcloud run services update "${_SERVICE}" \
-          --region="${_REGION}" \
+        gcloud run services update "$${CB_SERVICE}" \
+          --region="$${CB_REGION}" \
           --update-env-vars="$$UPDATE_VARS" \
           --quiet
 
   - id: build-job
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - 'CB_REGION=${_REGION}'
+      - 'CB_AR_REPO=${_AR_REPO}'
+      - 'CB_JOB=${_JOB}'
+      - 'CB_COMMIT_SHA=$COMMIT_SHA'
     args:
       - -c
       - |
@@ -173,14 +194,19 @@ steps:
           exit 0
         fi
         docker build \
-          -t "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_JOB}:$COMMIT_SHA" \
-          -t "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_JOB}:latest" \
+          -t "$${CB_REGION}-docker.pkg.dev/$${PROJECT_ID}/$${CB_AR_REPO}/$${CB_JOB}:$${CB_COMMIT_SHA}" \
+          -t "$${CB_REGION}-docker.pkg.dev/$${PROJECT_ID}/$${CB_AR_REPO}/$${CB_JOB}:latest" \
           -f Dockerfile.meu-pluggy-refresh \
           .
 
   - id: push-job
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - 'CB_REGION=${_REGION}'
+      - 'CB_AR_REPO=${_AR_REPO}'
+      - 'CB_JOB=${_JOB}'
     args:
       - -c
       - |
@@ -190,11 +216,19 @@ steps:
           exit 0
         fi
         docker push --all-tags \
-          "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_JOB}"
+          "$${CB_REGION}-docker.pkg.dev/$${PROJECT_ID}/$${CB_AR_REPO}/$${CB_JOB}"
 
   - id: deploy-job
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: bash
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - 'CB_REGION=${_REGION}'
+      - 'CB_AR_REPO=${_AR_REPO}'
+      - 'CB_JOB=${_JOB}'
+      - 'CB_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS}'
+      - 'CB_PROGRESS_GCS=${_MEU_PLUGGY_PROGRESS_GCS}'
+      - 'CB_COMMIT_SHA=$COMMIT_SHA'
     args:
       - -c
       - |
@@ -203,28 +237,27 @@ steps:
           echo "Skip deploy-job (sources unchanged)."
           exit 0
         fi
-        if [[ -z "${_MEU_PLUGGY_STORAGE_STATE_GCS}" ]]; then
-          echo "Skip Job deploy (_MEU_PLUGGY_STORAGE_STATE_GCS empty)."
+        if [[ -z "$${CB_STORAGE_STATE_GCS}" ]]; then
+          echo "Skip Job deploy (MEU_PLUGGY_STORAGE_STATE_GCS empty)."
           exit 0
         fi
-        JOB_IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_JOB}:$COMMIT_SHA"
-        PROGRESS_GCS="${_MEU_PLUGGY_PROGRESS_GCS}"
+        JOB_IMAGE="$${CB_REGION}-docker.pkg.dev/$${PROJECT_ID}/$${CB_AR_REPO}/$${CB_JOB}:$${CB_COMMIT_SHA}"
+        PROGRESS_GCS="$${CB_PROGRESS_GCS}"
         if [[ -z "$$PROGRESS_GCS" ]]; then
-          PROGRESS_GCS="${_MEU_PLUGGY_STORAGE_STATE_GCS}"
-          PROGRESS_GCS="$${PROGRESS_GCS%/storageState.json}/progress.json"
+          PROGRESS_GCS="$${CB_STORAGE_STATE_GCS%/storageState.json}/progress.json"
         fi
-        gcloud run jobs deploy "${_JOB}" \
+        gcloud run jobs deploy "$${CB_JOB}" \
           --image="$$JOB_IMAGE" \
-          --region="${_REGION}" \
+          --region="$${CB_REGION}" \
           --tasks=1 \
           --max-retries=0 \
           --task-timeout=30m \
           --memory=2Gi \
           --cpu=1 \
-          --set-env-vars="MEU_PLUGGY_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS},MEU_PLUGGY_PROGRESS_GCS=$$PROGRESS_GCS" \
+          --set-env-vars="MEU_PLUGGY_STORAGE_STATE_GCS=$${CB_STORAGE_STATE_GCS},MEU_PLUGGY_PROGRESS_GCS=$$PROGRESS_GCS" \
           --quiet
 
-        MARKER="${_MEU_PLUGGY_STORAGE_STATE_GCS%/*}/job-source.sha256"
+        MARKER="$${CB_STORAGE_STATE_GCS%/*}/job-source.sha256"
         gcloud storage cp /workspace/job-source.sha256 "$$MARKER" --quiet
         echo "Saved Job source hash to $$MARKER"
 
