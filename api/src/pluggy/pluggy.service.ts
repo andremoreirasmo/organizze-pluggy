@@ -223,10 +223,8 @@ export class PluggyService {
     return stateUri.replace(/[^/]+$/, 'progress.json');
   }
 
-  private writeLocalProgressSeed(message: string): void {
-    const filePath = this.localProgressPath();
-    mkdirSync(path.dirname(filePath), { recursive: true });
-    const seed: MeuPluggyRefreshProgress = {
+  private buildProgressSeed(message: string): MeuPluggyRefreshProgress {
+    return {
       status: 'running',
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -241,7 +239,64 @@ export class PluggyService {
       message,
       results: [],
     };
+  }
+
+  private writeLocalProgressSeed(message: string): void {
+    const filePath = this.localProgressPath();
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(
+      filePath,
+      JSON.stringify(this.buildProgressSeed(message), null, 2),
+      'utf8',
+    );
+  }
+
+  private async writeProgressSeed(message: string): Promise<void> {
+    const seed = this.buildProgressSeed(message);
+    const filePath = this.localProgressPath();
+    mkdirSync(path.dirname(filePath), { recursive: true });
     writeFileSync(filePath, JSON.stringify(seed, null, 2), 'utf8');
+
+    const gcsUri = this.progressGcsUri();
+    if (!gcsUri) {
+      return;
+    }
+    const match = gcsUri.match(/^gs:\/\/([^/]+)\/(.+)$/);
+    if (!match) {
+      return;
+    }
+    try {
+      const auth = new GoogleAuth({
+        scopes: ['https://www.googleapis.com/auth/devstorage.read_write'],
+      });
+      const client = await auth.getClient();
+      const url = `https://storage.googleapis.com/upload/storage/v1/b/${encodeURIComponent(match[1])}/o?uploadType=media&name=${encodeURIComponent(match[2])}`;
+      await client.request({
+        url,
+        method: 'POST',
+        data: JSON.stringify(seed, null, 2),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Progress GCS seed write failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  private pickFresherProgress(
+    a: MeuPluggyRefreshProgress | null,
+    b: MeuPluggyRefreshProgress | null,
+  ): MeuPluggyRefreshProgress | null {
+    if (!a) {
+      return b;
+    }
+    if (!b) {
+      return a;
+    }
+    const aTime = Date.parse(a.updatedAt) || 0;
+    const bTime = Date.parse(b.updatedAt) || 0;
+    return bTime >= aTime ? b : a;
   }
 
   private preferLocalMeuRefresh(projectId: string | undefined): boolean {
@@ -363,7 +418,7 @@ export class PluggyService {
       );
     }
 
-    this.writeLocalProgressSeed('Disparando Job na Cloud Run…');
+    await this.writeProgressSeed('Disparando Job na Cloud Run…');
 
     const auth = new GoogleAuth({
       scopes: ['https://www.googleapis.com/auth/cloud-platform'],
@@ -464,29 +519,33 @@ export class PluggyService {
   }
 
   async getMeuPluggyRefreshStatus(): Promise<MeuPluggyRefreshProgress> {
+    let local: MeuPluggyRefreshProgress | null = null;
     const localPath = this.localProgressPath();
     if (existsSync(localPath)) {
-      const parsed = this.parseProgressJson(readFileSync(localPath, 'utf8'));
-      if (parsed) {
-        return {
-          ...parsed,
-          mode: this.lastMeuRefreshMode ?? parsed.mode ?? 'local',
-          executionName:
-            this.lastMeuRefreshExecution ?? parsed.executionName ?? null,
-        };
-      }
+      local = this.parseProgressJson(readFileSync(localPath, 'utf8'));
     }
 
     const gcsUri = this.progressGcsUri();
-    if (gcsUri) {
-      const fromGcs = await this.readProgressFromGcs(gcsUri);
-      if (fromGcs) {
-        return {
-          ...fromGcs,
-          mode: this.lastMeuRefreshMode ?? 'cloud',
-          executionName: this.lastMeuRefreshExecution,
-        };
-      }
+    const fromGcs = gcsUri ? await this.readProgressFromGcs(gcsUri) : null;
+
+    // Prefer GCS in cloud (Job writes there). Local seed alone would stick on
+    // "Disparando Job…" forever after POST on Cloud Run.
+    const picked =
+      gcsUri != null
+        ? this.pickFresherProgress(fromGcs, local) ?? fromGcs ?? local
+        : local ?? fromGcs;
+
+    if (picked) {
+      const mode =
+        this.lastMeuRefreshMode ??
+        picked.mode ??
+        (gcsUri ? 'cloud' : 'local');
+      return {
+        ...picked,
+        mode,
+        executionName:
+          this.lastMeuRefreshExecution ?? picked.executionName ?? null,
+      };
     }
 
     return {
