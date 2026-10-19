@@ -228,11 +228,19 @@ O script roda `prisma migrate deploy` e `gcloud run deploy --source`. Se `MEU_PL
 
 Variáveis de ambiente em produção: mesmas do [`.env.example`](.env.example), com `NODE_ENV=production` (Cloud Run usa `PORT=8080`).
 
-### CI (GitHub Actions)
+### CI (Cloud Build)
 
-Push em `master` (ou *Run workflow*) dispara [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): migra Prisma, sobe o serviço Cloud Run e, se o secret `MEU_PLUGGY_STORAGE_STATE_GCS` existir, reconstrói o Job `meu-pluggy-refresh`.
+Push em `master` dispara o trigger GCP ([`cloudbuild.yaml`](cloudbuild.yaml)): migrate Prisma, build/push da imagem do app, deploy Cloud Run, build/deploy do Job `meu-pluggy-refresh`.
 
-Secrets necessários (além dos da app): `GCP_SA_KEY`, `MEU_PLUGGY_STORAGE_STATE_GCS` (e opcionalmente `MEU_PLUGGY_PROGRESS_GCS`).
+Setup uma vez (conecta o repo GitHub no Cloud Build se ainda não estiver):
+
+```powershell
+$env:GCP_PROJECT_ID = "brazuca-rd"
+$env:MEU_PLUGGY_STORAGE_STATE_GCS = "gs://SEU_BUCKET/meu-pluggy/storageState.json"
+.\scripts\setup-cloudbuild-trigger.ps1
+```
+
+Secret Manager: `DATABASE_URL` (para o step de migrate). A SA do Cloud Build precisa de `run.admin`, Artifact Registry e acesso ao secret.
 
 Depois do deploy:
 

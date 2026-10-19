@@ -27,12 +27,16 @@ Quando a sessão expirar, rode `pluggy:refresh:login` de novo e reenvie o arquiv
 
 ## 2) Deploy do Job
 
+Manual:
+
 ```powershell
 $env:GCP_PROJECT_ID = "seu-projeto"
 $env:MEU_PLUGGY_STORAGE_STATE_GCS = "gs://SEU_BUCKET/meu-pluggy/storageState.json"
 # opcional: $env:MEU_PLUGGY_CONNECTION_IDS = "uuid1,uuid2"
 .\scripts\deploy-meu-pluggy-refresh.ps1
 ```
+
+Ou via **Cloud Build** no push (`cloudbuild.yaml` + `scripts/setup-cloudbuild-trigger.ps1`). O `deploy-cloudrun.ps1` local também redeploya o Job se `MEU_PLUGGY_STORAGE_STATE_GCS` estiver no `.env`.
 
 A SA do Job precisa de leitura no `storageState` e **escrita** no `progress.json` (ex. `roles/storage.objectAdmin` no prefixo `meu-pluggy/`). A SA do serviço Nest precisa ler o `progress.json`.
 
