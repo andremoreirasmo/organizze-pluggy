@@ -73,7 +73,7 @@ if (-not [string]::IsNullOrWhiteSpace($dbUrl)) {
   gcloud secrets versions add DATABASE_URL --project=$ProjectId --data-file=$tmp --quiet
   Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
 } else {
-  Write-Host "WARN: DATABASE_URL not in .env — create Secret Manager secret DATABASE_URL for migrate."
+  Write-Host "WARN: DATABASE_URL not in .env - create Secret Manager secret DATABASE_URL for migrate."
 }
 
 $ProjectNumber = gcloud projects describe $ProjectId --format="value(projectNumber)"
@@ -137,8 +137,9 @@ if ($connection) {
       --repository=$repoResource `
       --branch-pattern="^$Branch$" `
       --build-config=cloudbuild.yaml `
-      --substitutions=$subsCsv `
+      --update-substitutions=$subsCsv `
       --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Failed to update trigger $TriggerName" }
   } else {
     Write-Host "Creating trigger $TriggerName ..."
     gcloud builds triggers create github `
@@ -150,23 +151,27 @@ if ($connection) {
       --build-config=cloudbuild.yaml `
       --substitutions=$subsCsv `
       --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create trigger $TriggerName" }
   }
 } else {
-  Write-Host "No Build connection found — creating classic GitHub trigger."
+  Write-Host "No Build connection found - creating classic GitHub trigger."
   Write-Host "If this fails, connect the repo once in:"
   Write-Host "https://console.cloud.google.com/cloud-build/triggers/connect?project=$ProjectId"
 
   gcloud builds triggers describe $TriggerName --project=$ProjectId --quiet 2>$null
   if ($LASTEXITCODE -eq 0) {
+    Write-Host "Updating trigger $TriggerName ..."
     gcloud builds triggers update github $TriggerName `
       --project=$ProjectId `
       --repo-owner=$RepoOwner `
       --repo-name=$RepoName `
       --branch-pattern="^$Branch$" `
       --build-config=cloudbuild.yaml `
-      --substitutions=$subsCsv `
+      --update-substitutions=$subsCsv `
       --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Failed to update trigger $TriggerName" }
   } else {
+    Write-Host "Creating trigger $TriggerName ..."
     gcloud builds triggers create github `
       --name=$TriggerName `
       --project=$ProjectId `
@@ -176,6 +181,7 @@ if ($connection) {
       --build-config=cloudbuild.yaml `
       --substitutions=$subsCsv `
       --quiet
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create trigger $TriggerName" }
   }
 }
 
@@ -185,5 +191,5 @@ Write-Host "Manual run: gcloud builds triggers run $TriggerName --project=$Proje
 if (-not [string]::IsNullOrWhiteSpace($StorageStateGcs)) {
   Write-Host "Job storageState: $StorageStateGcs"
 } else {
-  Write-Host "WARN: MEU_PLUGGY_STORAGE_STATE_GCS empty — Job step will skip until you set it on the trigger."
+  Write-Host "WARN: MEU_PLUGGY_STORAGE_STATE_GCS empty - Job step will skip until you set it on the trigger."
 }

@@ -7,8 +7,10 @@
 #   _MEU_PLUGGY_PROGRESS_GCS       (optional; derived from storage state)
 #   _RUN_PRISMA_MIGRATE            (true|false, default true)
 #
-# Secrets (Secret Manager → Cloud Build):
-#   DATABASE_URL — used when _RUN_PRISMA_MIGRATE=true
+# Secrets (Secret Manager -> Cloud Build):
+#   DATABASE_URL - used when _RUN_PRISMA_MIGRATE=true
+#
+# Bash vars inside steps must use $$ so Cloud Build does not treat them as substitutions.
 
 substitutions:
   _REGION: southamerica-east1
@@ -80,27 +82,28 @@ steps:
       - -c
       - |
         set -euo pipefail
-        IMAGE="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${COMMIT_SHA}"
+        APP_IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE}:$COMMIT_SHA"
         # Image-only deploy keeps existing Cloud Run env/secrets.
         gcloud run deploy "${_SERVICE}" \
-          --image="${IMAGE}" \
+          --image="$$APP_IMAGE" \
           --region="${_REGION}" \
           --platform=managed \
           --quiet
 
         # Ensure Job trigger env is present (idempotent update).
-        UPDATE_VARS="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${_REGION},MEU_PLUGGY_REFRESH_JOB=${_JOB}"
+        UPDATE_VARS="GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_REGION},MEU_PLUGGY_REFRESH_JOB=${_JOB}"
         if [[ -n "${_MEU_PLUGGY_STORAGE_STATE_GCS}" ]]; then
-          UPDATE_VARS="${UPDATE_VARS},MEU_PLUGGY_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS}"
-          PROGRESS="${_MEU_PLUGGY_PROGRESS_GCS}"
-          if [[ -z "${PROGRESS}" ]]; then
-            PROGRESS="${_MEU_PLUGGY_STORAGE_STATE_GCS%/*}/progress.json"
+          UPDATE_VARS="$${UPDATE_VARS},MEU_PLUGGY_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS}"
+          PROGRESS_GCS="${_MEU_PLUGGY_PROGRESS_GCS}"
+          if [[ -z "$$PROGRESS_GCS" ]]; then
+            PROGRESS_GCS="${_MEU_PLUGGY_STORAGE_STATE_GCS}"
+            PROGRESS_GCS="$${PROGRESS_GCS%/storageState.json}/progress.json"
           fi
-          UPDATE_VARS="${UPDATE_VARS},MEU_PLUGGY_PROGRESS_GCS=${PROGRESS}"
+          UPDATE_VARS="$${UPDATE_VARS},MEU_PLUGGY_PROGRESS_GCS=$$PROGRESS_GCS"
         fi
         gcloud run services update "${_SERVICE}" \
           --region="${_REGION}" \
-          --update-env-vars="${UPDATE_VARS}" \
+          --update-env-vars="$$UPDATE_VARS" \
           --quiet
 
   - id: build-job
@@ -133,20 +136,21 @@ steps:
           echo "Skip Job deploy (_MEU_PLUGGY_STORAGE_STATE_GCS empty)."
           exit 0
         fi
-        IMAGE="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_JOB}:${COMMIT_SHA}"
-        PROGRESS="${_MEU_PLUGGY_PROGRESS_GCS}"
-        if [[ -z "${PROGRESS}" ]]; then
-          PROGRESS="${_MEU_PLUGGY_STORAGE_STATE_GCS%/*}/progress.json"
+        JOB_IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_JOB}:$COMMIT_SHA"
+        PROGRESS_GCS="${_MEU_PLUGGY_PROGRESS_GCS}"
+        if [[ -z "$$PROGRESS_GCS" ]]; then
+          PROGRESS_GCS="${_MEU_PLUGGY_STORAGE_STATE_GCS}"
+          PROGRESS_GCS="$${PROGRESS_GCS%/storageState.json}/progress.json"
         fi
         gcloud run jobs deploy "${_JOB}" \
-          --image="${IMAGE}" \
+          --image="$$JOB_IMAGE" \
           --region="${_REGION}" \
           --tasks=1 \
           --max-retries=0 \
           --task-timeout=30m \
           --memory=2Gi \
           --cpu=1 \
-          --set-env-vars="MEU_PLUGGY_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS},MEU_PLUGGY_PROGRESS_GCS=${PROGRESS}" \
+          --set-env-vars="MEU_PLUGGY_STORAGE_STATE_GCS=${_MEU_PLUGGY_STORAGE_STATE_GCS},MEU_PLUGGY_PROGRESS_GCS=$$PROGRESS_GCS" \
           --quiet
 
 images:
