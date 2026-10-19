@@ -37,6 +37,12 @@ steps:
           echo "Skip prisma migrate (_RUN_PRISMA_MIGRATE=${_RUN_PRISMA_MIGRATE})"
           exit 0
         fi
+        # Strip BOM / CR that PowerShell secret uploads sometimes add.
+        export DATABASE_URL="$(printf '%s' "$$DATABASE_URL" | tr -d '\r' | sed $'s/^\xEF\xBB\xBF//')"
+        if [[ ! "$$DATABASE_URL" =~ ^postgres(ql)?:// ]]; then
+          echo "DATABASE_URL secret invalid (expected postgres:// URL)"
+          exit 1
+        fi
         cd api
         npm ci
         npx prisma migrate deploy

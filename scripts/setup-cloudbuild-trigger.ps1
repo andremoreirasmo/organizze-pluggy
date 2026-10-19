@@ -63,7 +63,9 @@ if (Test-Path $envFile) {
 }
 if (-not [string]::IsNullOrWhiteSpace($dbUrl)) {
   $tmp = Join-Path $env:TEMP "organizze-pluggy-database-url.txt"
-  Set-Content -LiteralPath $tmp -Value $dbUrl -NoNewline -Encoding utf8
+  # UTF8 no BOM - Prisma rejects URLs with a leading BOM.
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText($tmp, $dbUrl, $utf8NoBom)
   gcloud secrets describe DATABASE_URL --project=$ProjectId --quiet 2>$null
   if ($LASTEXITCODE -ne 0) {
     Write-Host "Creating Secret Manager secret DATABASE_URL..."
