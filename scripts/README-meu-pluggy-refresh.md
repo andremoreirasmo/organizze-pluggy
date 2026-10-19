@@ -36,7 +36,7 @@ $env:MEU_PLUGGY_STORAGE_STATE_GCS = "gs://SEU_BUCKET/meu-pluggy/storageState.jso
 .\scripts\deploy-meu-pluggy-refresh.ps1
 ```
 
-Ou via **Cloud Build** no push (`cloudbuild.yaml` + `scripts/setup-cloudbuild-trigger.ps1`). O `deploy-cloudrun.ps1` local também redeploya o Job se `MEU_PLUGGY_STORAGE_STATE_GCS` estiver no `.env`.
+Ou via **Cloud Build** no push (`cloudbuild.yaml` + `scripts/setup-cloudbuild-trigger.ps1`). O Job só é rebuildado se `Dockerfile.meu-pluggy-refresh` / `scripts/meu-pluggy-refresh.mjs` mudarem (marker `job-source.sha256` no GCS). Force: `_FORCE_JOB_REBUILD=true` no trigger. O `deploy-cloudrun.ps1` local também redeploya o Job se `MEU_PLUGGY_STORAGE_STATE_GCS` estiver no `.env`.
 
 A SA do Job precisa de leitura no `storageState` e **escrita** no `progress.json` (ex. `roles/storage.objectAdmin` no prefixo `meu-pluggy/`). A SA do serviço Nest precisa ler o `progress.json`.
 

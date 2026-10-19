@@ -230,7 +230,7 @@ Variáveis de ambiente em produção: mesmas do [`.env.example`](.env.example), 
 
 ### CI (Cloud Build)
 
-Push em `master` dispara o trigger GCP ([`cloudbuild.yaml`](cloudbuild.yaml)): migrate Prisma, build/push da imagem do app, deploy Cloud Run, build/deploy do Job `meu-pluggy-refresh`.
+Push em `master` dispara o trigger GCP ([`cloudbuild.yaml`](cloudbuild.yaml)): migrate Prisma, build/push da imagem do app, deploy Cloud Run. O Job `meu-pluggy-refresh` só é rebuildado quando `Dockerfile.meu-pluggy-refresh` ou `scripts/meu-pluggy-refresh.mjs` mudam (hash em GCS); force com substitution `_FORCE_JOB_REBUILD=true`.
 
 Setup uma vez (conecta o repo GitHub no Cloud Build se ainda não estiver):
 
