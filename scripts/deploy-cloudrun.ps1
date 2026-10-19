@@ -33,6 +33,15 @@ $Required = @(
   "DATABASE_URL"
 )
 
+# Optional — enables Atualizar Open Finance (Cloud Run Job + progress)
+$OptionalMeuRefresh = @(
+  "GCP_PROJECT_ID",
+  "GCP_REGION",
+  "MEU_PLUGGY_REFRESH_JOB",
+  "MEU_PLUGGY_STORAGE_STATE_GCS",
+  "MEU_PLUGGY_PROGRESS_GCS"
+)
+
 function Read-DotEnv([string]$Path) {
   $map = @{}
   Get-Content -LiteralPath $Path | ForEach-Object {
@@ -91,6 +100,17 @@ $yamlLines = @(
 foreach ($key in $Required) {
   $yamlLines += ($key + ": " + (Escape-YamlDoubleQuoted $envMap[$key]))
 }
+foreach ($key in $OptionalMeuRefresh) {
+  if ($envMap.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace($envMap[$key])) {
+    $yamlLines += ($key + ": " + (Escape-YamlDoubleQuoted $envMap[$key]))
+  }
+}
+if (-not $envMap.ContainsKey("GCP_PROJECT_ID") -or [string]::IsNullOrWhiteSpace($envMap["GCP_PROJECT_ID"])) {
+  $yamlLines += ("GCP_PROJECT_ID: " + (Escape-YamlDoubleQuoted $ProjectId))
+}
+if (-not $envMap.ContainsKey("GCP_REGION") -or [string]::IsNullOrWhiteSpace($envMap["GCP_REGION"])) {
+  $yamlLines += ("GCP_REGION: " + (Escape-YamlDoubleQuoted $Region))
+}
 [System.IO.File]::WriteAllText($yamlPath, ($yamlLines -join "`n"))
 
 Write-Host "Deploying Cloud Run service '$Service' to $ProjectId/$Region..."
@@ -125,3 +145,45 @@ Write-Host ""
 Write-Host "Deployed: $url"
 Write-Host "Next: add this URL to Google OAuth Authorized JavaScript origins."
 Write-Host "Health: $url/api/health"
+
+# Also rebuild/redeploy the Playwright Job when storageState GCS is configured.
+$storageStateGcs = $envMap["MEU_PLUGGY_STORAGE_STATE_GCS"]
+if ([string]::IsNullOrWhiteSpace($storageStateGcs)) {
+  $storageStateGcs = $env:MEU_PLUGGY_STORAGE_STATE_GCS
+}
+if (-not [string]::IsNullOrWhiteSpace($storageStateGcs)) {
+  Write-Host ""
+  Write-Host "Deploying Meu Pluggy refresh Job (MEU_PLUGGY_STORAGE_STATE_GCS set)..."
+  $env:GCP_PROJECT_ID = $ProjectId
+  $env:GCP_REGION = $Region
+  $env:MEU_PLUGGY_STORAGE_STATE_GCS = $storageStateGcs
+  if ($envMap.ContainsKey("MEU_PLUGGY_REFRESH_JOB") -and -not [string]::IsNullOrWhiteSpace($envMap["MEU_PLUGGY_REFRESH_JOB"])) {
+    $env:MEU_PLUGGY_REFRESH_JOB = $envMap["MEU_PLUGGY_REFRESH_JOB"]
+  }
+  if ($envMap.ContainsKey("MEU_PLUGGY_PROGRESS_GCS") -and -not [string]::IsNullOrWhiteSpace($envMap["MEU_PLUGGY_PROGRESS_GCS"])) {
+    $env:MEU_PLUGGY_PROGRESS_GCS = $envMap["MEU_PLUGGY_PROGRESS_GCS"]
+  }
+  if ($envMap.ContainsKey("MEU_PLUGGY_CONNECTION_IDS") -and -not [string]::IsNullOrWhiteSpace($envMap["MEU_PLUGGY_CONNECTION_IDS"])) {
+    $env:MEU_PLUGGY_CONNECTION_IDS = $envMap["MEU_PLUGGY_CONNECTION_IDS"]
+  }
+  if ($envMap.ContainsKey("MEU_PLUGGY_JOB_SA") -and -not [string]::IsNullOrWhiteSpace($envMap["MEU_PLUGGY_JOB_SA"])) {
+    $env:MEU_PLUGGY_JOB_SA = $envMap["MEU_PLUGGY_JOB_SA"]
+  }
+
+  $localState = Join-Path $Root ".cache\meu-pluggy-storageState.json"
+  if (Test-Path $localState) {
+    Write-Host "Uploading local storageState to $storageStateGcs ..."
+    gcloud storage cp $localState $storageStateGcs --project=$ProjectId --quiet
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to upload storageState to GCS"
+    }
+  }
+
+  & (Join-Path $PSScriptRoot "deploy-meu-pluggy-refresh.ps1")
+  if ($LASTEXITCODE -ne 0) {
+    throw "Meu Pluggy Job deploy failed"
+  }
+} else {
+  Write-Host ""
+  Write-Host "Skip Meu Pluggy Job deploy (set MEU_PLUGGY_STORAGE_STATE_GCS in .env to enable)."
+}

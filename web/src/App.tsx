@@ -68,6 +68,28 @@ type PluggyConnection = {
 
 type StoredConnection = Omit<PluggyConnection, 'accounts'>
 
+type MeuPluggyRefreshProgress = {
+  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  startedAt: string | null
+  updatedAt: string
+  finishedAt: string | null
+  total: number
+  completed: number
+  currentIndex: number
+  currentId: string | null
+  currentLabel: string | null
+  stepPercent: number | null
+  percent: number
+  message: string
+  results: Array<{
+    id: string
+    label: string | null
+    ok: boolean
+    note: string
+  }>
+  mode?: 'local' | 'cloud'
+}
+
 type InstitutionOption = {
   id: number
   name: string
@@ -453,6 +475,12 @@ function App() {
     name: string
   } | null>(null)
   const [deletingConnection, setDeletingConnection] = useState(false)
+  const [meuRefreshBusy, setMeuRefreshBusy] = useState(false)
+  const [meuRefreshProgress, setMeuRefreshProgress] =
+    useState<MeuPluggyRefreshProgress | null>(null)
+  const [meuRefreshToastOpen, setMeuRefreshToastOpen] = useState(false)
+  const [meuRefreshDoneToken, setMeuRefreshDoneToken] = useState(0)
+  const meuRefreshTerminalRef = useRef(false)
   const [expandedMapChildren, setExpandedMapChildren] = useState<
     Record<string, boolean>
   >({})
@@ -1243,6 +1271,90 @@ function App() {
     }
   }, [deleteConfirm, loadConfig, loadHomeData])
 
+  const startMeuPluggyRefresh = useCallback(async () => {
+    setError(null)
+    setMeuRefreshBusy(true)
+    setMeuRefreshToastOpen(true)
+    meuRefreshTerminalRef.current = false
+    setMeuRefreshProgress({
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      finishedAt: null,
+      total: 0,
+      completed: 0,
+      currentIndex: 0,
+      currentId: null,
+      currentLabel: null,
+      stepPercent: 0,
+      percent: 0,
+      message: 'Iniciando sync Open Finance…',
+      results: [],
+    })
+    try {
+      await apiFetch<{ started: boolean; mode?: string }>(
+        '/api/pluggy/meu-refresh',
+        { method: 'POST' },
+      )
+    } catch (err) {
+      setMeuRefreshToastOpen(false)
+      setMeuRefreshProgress(null)
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Erro ao iniciar refresh do Meu Pluggy',
+      )
+    } finally {
+      setMeuRefreshBusy(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!meuRefreshToastOpen) {
+      return
+    }
+    let cancelled = false
+    let closeTimer: number | undefined
+
+    const poll = async () => {
+      try {
+        const status = await apiFetch<MeuPluggyRefreshProgress>(
+          '/api/pluggy/meu-refresh/status',
+        )
+        if (cancelled) {
+          return
+        }
+        setMeuRefreshProgress(status)
+        if (status.status === 'succeeded' || status.status === 'failed') {
+          if (!meuRefreshTerminalRef.current) {
+            meuRefreshTerminalRef.current = true
+            setMeuRefreshDoneToken((n) => n + 1)
+          }
+          closeTimer = window.setTimeout(() => {
+            if (!cancelled) {
+              setMeuRefreshToastOpen(false)
+            }
+          }, 2800)
+        }
+      } catch {
+        // keep toast; next poll may succeed
+      }
+    }
+
+    void poll()
+    const interval = window.setInterval(() => {
+      void poll()
+    }, 900)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+      if (closeTimer !== undefined) {
+        window.clearTimeout(closeTimer)
+      }
+    }
+  }, [meuRefreshToastOpen])
+
   const logout = useCallback(async () => {
     suppressUnauthorizedHandler = true
     setError(null)
@@ -1387,6 +1499,13 @@ function App() {
             <ReconciliationView
               apiFetch={authenticatedFetch}
               onError={setError}
+              onMeuPluggyRefresh={() => void startMeuPluggyRefresh()}
+              meuPluggyRefreshBusy={
+                meuRefreshBusy ||
+                (meuRefreshToastOpen &&
+                  meuRefreshProgress?.status === 'running')
+              }
+              meuPluggyRefreshDoneToken={meuRefreshDoneToken}
             />
           </div>
         ) : null}
@@ -2243,6 +2362,70 @@ function App() {
           </div>
         ) : null}
       </main>
+
+      {meuRefreshToastOpen && meuRefreshProgress ? (
+        <div
+          className={`meu-refresh-toast${
+            meuRefreshProgress.status === 'failed' ? ' is-failed' : ''
+          }${
+            meuRefreshProgress.status === 'succeeded' ? ' is-done' : ''
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="meu-refresh-toast-head">
+            <strong>
+              {meuRefreshProgress.status === 'succeeded'
+                ? 'Open Finance atualizado'
+                : meuRefreshProgress.status === 'failed'
+                  ? 'Sync com falhas'
+                  : 'Atualizando Open Finance'}
+            </strong>
+            <button
+              type="button"
+              className="meu-refresh-toast-close"
+              aria-label="Fechar"
+              onClick={() => setMeuRefreshToastOpen(false)}
+            >
+              ×
+            </button>
+          </div>
+          <p className="meu-refresh-toast-msg">
+            {meuRefreshProgress.currentLabel
+              ? `${meuRefreshProgress.currentLabel}`
+              : null}
+            {meuRefreshProgress.currentLabel && meuRefreshProgress.message
+              ? ' · '
+              : null}
+            {meuRefreshProgress.message || 'Sincronizando…'}
+          </p>
+          {meuRefreshProgress.total > 0 ? (
+            <p className="meu-refresh-toast-meta">
+              {Math.min(
+                meuRefreshProgress.completed +
+                  (meuRefreshProgress.status === 'running' ? 1 : 0),
+                meuRefreshProgress.total,
+              )}
+              /{meuRefreshProgress.total}
+              {meuRefreshProgress.stepPercent != null
+                ? ` · esta conexão ${meuRefreshProgress.stepPercent}%`
+                : null}
+            </p>
+          ) : null}
+          <div
+            className="meu-refresh-toast-bar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={meuRefreshProgress.percent}
+            role="progressbar"
+          >
+            <span style={{ width: `${meuRefreshProgress.percent}%` }} />
+          </div>
+          <span className="meu-refresh-toast-pct">
+            {meuRefreshProgress.percent}%
+          </span>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -10,6 +10,14 @@ type EnvShape = {
   PLUGGY_CLIENT_ID: string;
   PLUGGY_CLIENT_SECRET: string;
   DATABASE_URL?: string;
+  /** Optional: Cloud Run Job trigger for Meu Pluggy Playwright refresh. */
+  GCP_PROJECT_ID?: string;
+  GCP_REGION?: string;
+  MEU_PLUGGY_REFRESH_JOB?: string;
+  /** Force local Playwright script even when GCP_PROJECT_ID is set. */
+  MEU_PLUGGY_REFRESH_LOCAL?: string;
+  MEU_PLUGGY_STORAGE_STATE_GCS?: string;
+  MEU_PLUGGY_PROGRESS_GCS?: string;
 };
 
 export function validateEnv(config: Record<string, unknown>): EnvShape {
@@ -49,6 +57,22 @@ export function validateEnv(config: Record<string, unknown>): EnvShape {
     PLUGGY_CLIENT_SECRET: String(config.PLUGGY_CLIENT_SECRET),
     DATABASE_URL: config.DATABASE_URL
       ? String(config.DATABASE_URL)
+      : undefined,
+    GCP_PROJECT_ID: config.GCP_PROJECT_ID
+      ? String(config.GCP_PROJECT_ID)
+      : undefined,
+    GCP_REGION: config.GCP_REGION ? String(config.GCP_REGION) : undefined,
+    MEU_PLUGGY_REFRESH_JOB: config.MEU_PLUGGY_REFRESH_JOB
+      ? String(config.MEU_PLUGGY_REFRESH_JOB)
+      : undefined,
+    MEU_PLUGGY_REFRESH_LOCAL: config.MEU_PLUGGY_REFRESH_LOCAL
+      ? String(config.MEU_PLUGGY_REFRESH_LOCAL)
+      : undefined,
+    MEU_PLUGGY_STORAGE_STATE_GCS: config.MEU_PLUGGY_STORAGE_STATE_GCS
+      ? String(config.MEU_PLUGGY_STORAGE_STATE_GCS)
+      : undefined,
+    MEU_PLUGGY_PROGRESS_GCS: config.MEU_PLUGGY_PROGRESS_GCS
+      ? String(config.MEU_PLUGGY_PROGRESS_GCS)
       : undefined,
   };
 }

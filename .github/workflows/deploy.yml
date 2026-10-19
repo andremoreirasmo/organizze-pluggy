@@ -1,0 +1,158 @@
+name: Deploy Cloud Run
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudrun
+  cancel-in-progress: true
+
+env:
+  GCP_PROJECT_ID: brazuca-rd
+  GCP_REGION: southamerica-east1
+  GCP_SERVICE_NAME: organizze-pluggy
+  MEU_PLUGGY_REFRESH_JOB: meu-pluggy-refresh
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Prisma migrate deploy
+        working-directory: api
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          npm ci
+          npx prisma migrate deploy
+
+      - name: Deploy Cloud Run service
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_ALLOWED_EMAILS: ${{ secrets.GOOGLE_ALLOWED_EMAILS }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          ORGANIZZE_EMAIL: ${{ secrets.ORGANIZZE_EMAIL }}
+          ORGANIZZE_API_TOKEN: ${{ secrets.ORGANIZZE_API_TOKEN }}
+          ORGANIZZE_USER_AGENT: ${{ secrets.ORGANIZZE_USER_AGENT }}
+          PLUGGY_CLIENT_ID: ${{ secrets.PLUGGY_CLIENT_ID }}
+          PLUGGY_CLIENT_SECRET: ${{ secrets.PLUGGY_CLIENT_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MEU_PLUGGY_STORAGE_STATE_GCS: ${{ secrets.MEU_PLUGGY_STORAGE_STATE_GCS }}
+          MEU_PLUGGY_PROGRESS_GCS: ${{ secrets.MEU_PLUGGY_PROGRESS_GCS }}
+        run: |
+          set -euo pipefail
+          ENV_FILE="$(mktemp)"
+          {
+            echo "NODE_ENV: \"production\""
+            echo "GOOGLE_CLIENT_ID: \"${GOOGLE_CLIENT_ID}\""
+            echo "GOOGLE_ALLOWED_EMAILS: \"${GOOGLE_ALLOWED_EMAILS}\""
+            echo "SESSION_SECRET: \"${SESSION_SECRET}\""
+            echo "ORGANIZZE_EMAIL: \"${ORGANIZZE_EMAIL}\""
+            echo "ORGANIZZE_API_TOKEN: \"${ORGANIZZE_API_TOKEN}\""
+            echo "ORGANIZZE_USER_AGENT: \"${ORGANIZZE_USER_AGENT}\""
+            echo "PLUGGY_CLIENT_ID: \"${PLUGGY_CLIENT_ID}\""
+            echo "PLUGGY_CLIENT_SECRET: \"${PLUGGY_CLIENT_SECRET}\""
+            echo "DATABASE_URL: \"${DATABASE_URL}\""
+            echo "GCP_PROJECT_ID: \"${GCP_PROJECT_ID}\""
+            echo "GCP_REGION: \"${GCP_REGION}\""
+            echo "MEU_PLUGGY_REFRESH_JOB: \"${MEU_PLUGGY_REFRESH_JOB}\""
+            if [[ -n "${MEU_PLUGGY_STORAGE_STATE_GCS:-}" ]]; then
+              echo "MEU_PLUGGY_STORAGE_STATE_GCS: \"${MEU_PLUGGY_STORAGE_STATE_GCS}\""
+            fi
+            if [[ -n "${MEU_PLUGGY_PROGRESS_GCS:-}" ]]; then
+              echo "MEU_PLUGGY_PROGRESS_GCS: \"${MEU_PLUGGY_PROGRESS_GCS}\""
+            elif [[ -n "${MEU_PLUGGY_STORAGE_STATE_GCS:-}" ]]; then
+              echo "MEU_PLUGGY_PROGRESS_GCS: \"${MEU_PLUGGY_STORAGE_STATE_GCS%/*}/progress.json\""
+            fi
+          } > "${ENV_FILE}"
+
+          gcloud run deploy "${GCP_SERVICE_NAME}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --source=. \
+            --allow-unauthenticated \
+            --port=8080 \
+            --memory=512Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=1 \
+            --cpu-boost \
+            --env-vars-file="${ENV_FILE}" \
+            --quiet
+
+          rm -f "${ENV_FILE}"
+
+      - name: Deploy Meu Pluggy refresh Job
+        env:
+          MEU_PLUGGY_STORAGE_STATE_GCS: ${{ secrets.MEU_PLUGGY_STORAGE_STATE_GCS }}
+          MEU_PLUGGY_PROGRESS_GCS: ${{ secrets.MEU_PLUGGY_PROGRESS_GCS }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MEU_PLUGGY_STORAGE_STATE_GCS:-}" ]]; then
+            echo "Skip Job deploy (secret MEU_PLUGGY_STORAGE_STATE_GCS not set)."
+            exit 0
+          fi
+
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/cloud-run-source-deploy/${MEU_PLUGGY_REFRESH_JOB}:latest"
+          PROGRESS_GCS="${MEU_PLUGGY_PROGRESS_GCS:-}"
+          if [[ -z "${PROGRESS_GCS}" ]]; then
+            PROGRESS_GCS="${MEU_PLUGGY_STORAGE_STATE_GCS%/*}/progress.json"
+          fi
+
+          gcloud artifacts repositories describe cloud-run-source-deploy \
+            --project="${GCP_PROJECT_ID}" \
+            --location="${GCP_REGION}" \
+            --quiet >/dev/null 2>&1 || \
+          gcloud artifacts repositories create cloud-run-source-deploy \
+            --project="${GCP_PROJECT_ID}" \
+            --location="${GCP_REGION}" \
+            --repository-format=docker \
+            --quiet
+
+          cat > /tmp/meu-pluggy-refresh-cloudbuild.yaml <<EOF
+          steps:
+            - name: gcr.io/cloud-builders/docker
+              args: ['build', '-t', '${IMAGE}', '-f', 'Dockerfile.meu-pluggy-refresh', '.']
+          images:
+            - '${IMAGE}'
+          EOF
+
+          gcloud builds submit . \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --config=/tmp/meu-pluggy-refresh-cloudbuild.yaml \
+            --quiet
+
+          gcloud run jobs deploy "${MEU_PLUGGY_REFRESH_JOB}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --image="${IMAGE}" \
+            --tasks=1 \
+            --max-retries=0 \
+            --task-timeout=30m \
+            --memory=2Gi \
+            --cpu=1 \
+            --set-env-vars="MEU_PLUGGY_STORAGE_STATE_GCS=${MEU_PLUGGY_STORAGE_STATE_GCS},MEU_PLUGGY_PROGRESS_GCS=${PROGRESS_GCS}" \
+            --quiet
+
+          echo "Job ${MEU_PLUGGY_REFRESH_JOB} deployed."

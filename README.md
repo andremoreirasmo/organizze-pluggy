@@ -224,14 +224,21 @@ $env:GCP_PROJECT_ID = "seu-projeto-gcp"
 .\scripts\deploy-cloudrun.ps1
 ```
 
-O script roda `prisma migrate deploy` e `gcloud run deploy --source`. Variáveis de ambiente em produção: mesmas do [`.env.example`](.env.example), com `NODE_ENV=production` (Cloud Run usa `PORT=8080`).
+O script roda `prisma migrate deploy` e `gcloud run deploy --source`. Se `MEU_PLUGGY_STORAGE_STATE_GCS` estiver no `.env`, também faz upload do `storageState` local (se existir) e redeploy do **Cloud Run Job** Playwright (`scripts/deploy-meu-pluggy-refresh.ps1`).
+
+Variáveis de ambiente em produção: mesmas do [`.env.example`](.env.example), com `NODE_ENV=production` (Cloud Run usa `PORT=8080`).
+
+### CI (GitHub Actions)
+
+Push em `master` (ou *Run workflow*) dispara [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): migra Prisma, sobe o serviço Cloud Run e, se o secret `MEU_PLUGGY_STORAGE_STATE_GCS` existir, reconstrói o Job `meu-pluggy-refresh`.
+
+Secrets necessários (além dos da app): `GCP_SA_KEY`, `MEU_PLUGGY_STORAGE_STATE_GCS` (e opcionalmente `MEU_PLUGGY_PROGRESS_GCS`).
 
 Depois do deploy:
 
 1. Adicionar a URL pública em **Google OAuth → Authorized JavaScript origins**.
 2. Conferir `GET /api/health` (sem login).
-
-CI/CD e secrets de produção ficam fora deste repositório (infra pessoal).
+3. Conceder à SA do serviço Nest permissão para executar o Job (`roles/run.developer`) e ler o `progress.json` no GCS.
 
 ---
 

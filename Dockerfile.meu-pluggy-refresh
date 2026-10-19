@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1
+# Cloud Run Job: Playwright refresh of Meu Pluggy connections.
+FROM mcr.microsoft.com/playwright:v1.56.1-jammy
+
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+COPY scripts/meu-pluggy-refresh.mjs ./scripts/meu-pluggy-refresh.mjs
+
+RUN npm init -y \
+  && npm install --omit=dev playwright@1.56.1 @google-cloud/storage@7.17.3
+
+CMD ["node", "scripts/meu-pluggy-refresh.mjs"]

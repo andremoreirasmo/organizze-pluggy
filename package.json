@@ -9,9 +9,17 @@
     "build": "npm --prefix web run build && npm --prefix api run build",
     "start": "npm --prefix api run start:prod",
     "prisma:generate": "npm --prefix api exec prisma generate",
-    "prisma:migrate": "npm --prefix api exec prisma migrate dev"
+    "prisma:migrate": "npm --prefix api exec prisma migrate dev",
+    "pluggy:refresh": "node scripts/meu-pluggy-refresh.mjs",
+    "pluggy:refresh:login": "node scripts/meu-pluggy-refresh.mjs --headed",
+    "pluggy:refresh:export": "node scripts/meu-pluggy-refresh.mjs --headed --export-state-only",
+    "pluggy:refresh:install": "node scripts/install-playwright-chromium.mjs"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.17.3"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "concurrently": "^9.2.1",
+    "playwright": "^1.56.1"
   }
 }

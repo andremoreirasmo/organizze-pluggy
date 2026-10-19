@@ -88,6 +88,18 @@ export class PluggyController {
     return this.pluggy.syncAllConnections();
   }
 
+  /** Starts Playwright refresh (local script or Cloud Run Job). */
+  @Post('meu-refresh')
+  startMeuPluggyRefresh() {
+    return this.pluggy.startMeuPluggyRefresh();
+  }
+
+  /** Live progress (connection + %) written by the refresh script. */
+  @Get('meu-refresh/status')
+  getMeuPluggyRefreshStatus() {
+    return this.pluggy.getMeuPluggyRefreshStatus();
+  }
+
   @Get('connections/sync-status')
   listConnectionSyncStatuses() {
     return this.pluggy.listConnectionSyncStatuses();

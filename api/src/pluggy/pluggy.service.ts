@@ -1,10 +1,15 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
 import {
   BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { GoogleAuth } from 'google-auth-library';
 import {
   PluggyClient,
   Transaction,
@@ -20,6 +25,29 @@ import {
   parsePluggyAccountMapKey,
   type PluggyAccountView,
 } from './pluggy-accounts';
+
+export type MeuPluggyRefreshProgress = {
+  status: 'idle' | 'running' | 'succeeded' | 'failed';
+  startedAt: string | null;
+  updatedAt: string;
+  finishedAt: string | null;
+  total: number;
+  completed: number;
+  currentIndex: number;
+  currentId: string | null;
+  currentLabel: string | null;
+  stepPercent: number | null;
+  percent: number;
+  message: string;
+  results: Array<{
+    id: string;
+    label: string | null;
+    ok: boolean;
+    note: string;
+  }>;
+  mode?: 'local' | 'cloud';
+  executionName?: string | null;
+};
 
 export type PluggyInvestmentView = {
   id: string;
@@ -150,6 +178,334 @@ export class PluggyService {
   async createConnectToken(itemId?: string): Promise<{ accessToken: string }> {
     const data = await this.client.createConnectToken(itemId);
     return { accessToken: data.accessToken };
+  }
+
+  private localMeuRefreshChild: ChildProcess | null = null;
+  private lastMeuRefreshMode: 'local' | 'cloud' | null = null;
+  private lastMeuRefreshExecution: string | null = null;
+
+  private resolveRepoRoot(): string {
+    const candidates = [
+      process.cwd(),
+      path.resolve(process.cwd(), '..'),
+      path.resolve(__dirname, '../../..'),
+      path.resolve(__dirname, '../../../..'),
+    ];
+    for (const root of candidates) {
+      if (existsSync(path.join(root, 'scripts', 'meu-pluggy-refresh.mjs'))) {
+        return root;
+      }
+    }
+    return path.resolve(process.cwd(), '..');
+  }
+
+  private localProgressPath(): string {
+    const fromEnv = process.env.MEU_PLUGGY_PROGRESS_PATH?.trim();
+    if (fromEnv) {
+      return path.resolve(fromEnv);
+    }
+    return path.join(this.resolveRepoRoot(), '.cache', 'meu-pluggy-progress.json');
+  }
+
+  private progressGcsUri(): string | null {
+    const explicit =
+      this.config.get<string>('MEU_PLUGGY_PROGRESS_GCS')?.trim() ||
+      process.env.MEU_PLUGGY_PROGRESS_GCS?.trim();
+    if (explicit) {
+      return explicit;
+    }
+    const stateUri =
+      this.config.get<string>('MEU_PLUGGY_STORAGE_STATE_GCS')?.trim() ||
+      process.env.MEU_PLUGGY_STORAGE_STATE_GCS?.trim();
+    if (!stateUri) {
+      return null;
+    }
+    return stateUri.replace(/[^/]+$/, 'progress.json');
+  }
+
+  private writeLocalProgressSeed(message: string): void {
+    const filePath = this.localProgressPath();
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    const seed: MeuPluggyRefreshProgress = {
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      finishedAt: null,
+      total: 0,
+      completed: 0,
+      currentIndex: 0,
+      currentId: null,
+      currentLabel: null,
+      stepPercent: 0,
+      percent: 0,
+      message,
+      results: [],
+    };
+    writeFileSync(filePath, JSON.stringify(seed, null, 2), 'utf8');
+  }
+
+  private preferLocalMeuRefresh(projectId: string | undefined): boolean {
+    const flag =
+      this.config.get<string>('MEU_PLUGGY_REFRESH_LOCAL')?.trim() ||
+      process.env.MEU_PLUGGY_REFRESH_LOCAL?.trim();
+    if (flag === '1' || flag === 'true') {
+      return true;
+    }
+    if (flag === '0' || flag === 'false') {
+      return false;
+    }
+    return !projectId;
+  }
+
+  private startLocalMeuPluggyRefresh(): {
+    started: true;
+    mode: 'local';
+    executionName: string;
+    job: string;
+  } {
+    if (
+      this.localMeuRefreshChild &&
+      this.localMeuRefreshChild.exitCode === null &&
+      !this.localMeuRefreshChild.killed
+    ) {
+      return {
+        started: true as const,
+        mode: 'local' as const,
+        executionName: 'local/running',
+        job: 'local',
+      };
+    }
+
+    const root = this.resolveRepoRoot();
+    const script = path.join(root, 'scripts', 'meu-pluggy-refresh.mjs');
+    if (!existsSync(script)) {
+      throw new ServiceUnavailableException(
+        `Script Meu Pluggy não encontrado em ${script}`,
+      );
+    }
+
+    this.writeLocalProgressSeed('Iniciando sync local…');
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      MEU_PLUGGY_PROGRESS_PATH: this.localProgressPath(),
+    };
+    // Cursor/sandbox often sets PLAYWRIGHT_BROWSERS_PATH to a cache the API
+    // process does not share — drop invalid paths so Playwright uses
+    // %LOCALAPPDATA%\ms-playwright (where `npm run pluggy:refresh:install` puts browsers).
+    const browsersPath = childEnv.PLAYWRIGHT_BROWSERS_PATH?.trim();
+    if (
+      browsersPath &&
+      (!existsSync(browsersPath) ||
+        !existsSync(path.join(browsersPath, 'chromium_headless_shell-1248')))
+    ) {
+      delete childEnv.PLAYWRIGHT_BROWSERS_PATH;
+    }
+    const child = spawn(process.execPath, [script], {
+      cwd: root,
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    this.localMeuRefreshChild = child;
+    this.lastMeuRefreshMode = 'local';
+    this.lastMeuRefreshExecution = `local/${child.pid ?? 'unknown'}`;
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      this.logger.log(`[meu-refresh] ${chunk.toString().trimEnd()}`);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      this.logger.warn(`[meu-refresh] ${chunk.toString().trimEnd()}`);
+    });
+    child.on('exit', (code) => {
+      this.logger.log(`Local Meu Pluggy refresh exited with code ${code}`);
+      this.localMeuRefreshChild = null;
+    });
+
+    this.logger.log(`Started local Meu Pluggy refresh (pid ${child.pid})`);
+    return {
+      started: true as const,
+      mode: 'local' as const,
+      executionName: this.lastMeuRefreshExecution,
+      job: 'local',
+    };
+  }
+
+  /**
+   * Starts Meu Pluggy Playwright refresh: local script when GCP is absent
+   * (or MEU_PLUGGY_REFRESH_LOCAL=1), otherwise Cloud Run Job.
+   */
+  async startMeuPluggyRefresh(): Promise<{
+    started: true;
+    mode: 'local' | 'cloud';
+    executionName: string;
+    job: string;
+  }> {
+    const projectId =
+      this.config.get<string>('GCP_PROJECT_ID')?.trim() ||
+      process.env.GOOGLE_CLOUD_PROJECT?.trim() ||
+      process.env.GCLOUD_PROJECT?.trim();
+
+    if (this.preferLocalMeuRefresh(projectId)) {
+      return this.startLocalMeuPluggyRefresh();
+    }
+
+    const region =
+      this.config.get<string>('GCP_REGION')?.trim() ||
+      process.env.GCP_REGION?.trim() ||
+      'southamerica-east1';
+    const job =
+      this.config.get<string>('MEU_PLUGGY_REFRESH_JOB')?.trim() ||
+      process.env.MEU_PLUGGY_REFRESH_JOB?.trim() ||
+      'meu-pluggy-refresh';
+
+    if (!projectId) {
+      throw new ServiceUnavailableException(
+        'Refresh Meu Pluggy não configurado (GCP_PROJECT_ID ausente).',
+      );
+    }
+
+    this.writeLocalProgressSeed('Disparando Job na Cloud Run…');
+
+    const auth = new GoogleAuth({
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const accessToken =
+      typeof tokenResponse === 'string' ? tokenResponse : tokenResponse?.token;
+    if (!accessToken) {
+      throw new ServiceUnavailableException(
+        'Não foi possível autenticar na GCP para disparar o Job.',
+      );
+    }
+
+    const url = `https://run.googleapis.com/v2/projects/${projectId}/locations/${region}/jobs/${job}:run`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+
+    const bodyText = await response.text();
+    let payload: { name?: string; error?: { message?: string } } = {};
+    try {
+      payload = bodyText ? (JSON.parse(bodyText) as typeof payload) : {};
+    } catch {
+      payload = {};
+    }
+
+    if (!response.ok) {
+      const message =
+        payload.error?.message ||
+        bodyText.slice(0, 300) ||
+        `HTTP ${response.status}`;
+      this.logger.warn(`Cloud Run Job ${job} execute failed: ${message}`);
+      throw new ServiceUnavailableException(
+        `Não foi possível iniciar o refresh: ${message}`,
+      );
+    }
+
+    const executionName = payload.name ?? `${job}/executions/unknown`;
+    this.lastMeuRefreshMode = 'cloud';
+    this.lastMeuRefreshExecution = executionName;
+    this.logger.log(`Started Meu Pluggy refresh job: ${executionName}`);
+    return {
+      started: true as const,
+      mode: 'cloud' as const,
+      executionName,
+      job,
+    };
+  }
+
+  private parseProgressJson(raw: string): MeuPluggyRefreshProgress | null {
+    try {
+      const parsed = JSON.parse(raw) as MeuPluggyRefreshProgress;
+      if (!parsed || typeof parsed !== 'object' || !parsed.status) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readProgressFromGcs(
+    gcsUri: string,
+  ): Promise<MeuPluggyRefreshProgress | null> {
+    const match = gcsUri.match(/^gs:\/\/([^/]+)\/(.+)$/);
+    if (!match) {
+      return null;
+    }
+    const bucket = match[1];
+    const object = match[2];
+    try {
+      const auth = new GoogleAuth({
+        scopes: ['https://www.googleapis.com/auth/devstorage.read_only'],
+      });
+      const client = await auth.getClient();
+      const url = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(object)}?alt=media`;
+      const response = await client.request<string>({
+        url,
+        responseType: 'text',
+      });
+      const data =
+        typeof response.data === 'string'
+          ? response.data
+          : JSON.stringify(response.data);
+      return this.parseProgressJson(data);
+    } catch (error) {
+      this.logger.debug(
+        `Progress GCS read failed: ${error instanceof Error ? error.message : error}`,
+      );
+      return null;
+    }
+  }
+
+  async getMeuPluggyRefreshStatus(): Promise<MeuPluggyRefreshProgress> {
+    const localPath = this.localProgressPath();
+    if (existsSync(localPath)) {
+      const parsed = this.parseProgressJson(readFileSync(localPath, 'utf8'));
+      if (parsed) {
+        return {
+          ...parsed,
+          mode: this.lastMeuRefreshMode ?? parsed.mode ?? 'local',
+          executionName:
+            this.lastMeuRefreshExecution ?? parsed.executionName ?? null,
+        };
+      }
+    }
+
+    const gcsUri = this.progressGcsUri();
+    if (gcsUri) {
+      const fromGcs = await this.readProgressFromGcs(gcsUri);
+      if (fromGcs) {
+        return {
+          ...fromGcs,
+          mode: this.lastMeuRefreshMode ?? 'cloud',
+          executionName: this.lastMeuRefreshExecution,
+        };
+      }
+    }
+
+    return {
+      status: 'idle',
+      startedAt: null,
+      updatedAt: new Date().toISOString(),
+      finishedAt: null,
+      total: 0,
+      completed: 0,
+      currentIndex: 0,
+      currentId: null,
+      currentLabel: null,
+      stepPercent: null,
+      percent: 0,
+      message: 'Nenhum sync em andamento',
+      results: [],
+      mode: this.lastMeuRefreshMode ?? undefined,
+      executionName: this.lastMeuRefreshExecution,
+    };
   }
 
   listInstitutions(search?: string) {
