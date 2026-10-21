@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import {
+  CashflowPanel,
+  type ReportsCashflowOverviewResponse,
+} from './CashflowPanel'
+import {
   InstallmentsPanel,
   type InstallmentsOverviewResponse,
 } from './InstallmentsPanel'
@@ -59,12 +63,16 @@ export function DashboardView({ apiFetch, onError }: Props) {
     useState<InstallmentsOverviewResponse | null>(null)
   const [investments, setInvestments] =
     useState<InvestmentsOverviewResponse | null>(null)
+  const [cashflow, setCashflow] =
+    useState<ReportsCashflowOverviewResponse | null>(null)
   const failedLoadRef = useRef(false)
 
-  const chartMonths = useMemo(
-    () => installments?.monthlyBars.map((bar) => bar.monthKey) ?? [],
-    [installments],
-  )
+  const chartMonths = useMemo(() => {
+    if (section === 'cashflow') {
+      return cashflow?.months.map((m) => m.monthKey) ?? []
+    }
+    return installments?.monthlyBars.map((bar) => bar.monthKey) ?? []
+  }, [section, cashflow, installments])
 
   const syncDashboardUrl = useCallback(
     (
@@ -152,33 +160,79 @@ export function DashboardView({ apiFetch, onError }: Props) {
     }
   }, [apiFetch, onError])
 
+  const loadCashflow = useCallback(
+    async (monthForYear: string) => {
+      setLoading(true)
+      onError(null)
+      try {
+        const data = await apiFetch<ReportsCashflowOverviewResponse>(
+          `/api/reports/cashflow?month=${encodeURIComponent(monthForYear)}`,
+        )
+        failedLoadRef.current = false
+        setCashflow(data)
+        setSelectedMonth((current) => {
+          const keys = data.months.map((m) => m.monthKey)
+          if (keys.includes(current)) {
+            return current
+          }
+          const sameMonth = data.months.find(
+            (m) => m.monthKey.slice(5) === current.slice(5),
+          )
+          return sameMonth?.monthKey ?? data.selectedMonth
+        })
+      } catch (err) {
+        failedLoadRef.current = true
+        onError(
+          err instanceof Error
+            ? err.message
+            : 'Erro ao carregar fluxo de caixa',
+        )
+      } finally {
+        setLoading(false)
+      }
+    },
+    [apiFetch, onError],
+  )
+
   const changeSelectedMonth = useCallback(
     (month: string) => {
-      if (chartMonths.length > 0 && !chartMonths.includes(month)) {
+      // Parcelas: only months inside the chart window.
+      // Caixa: any month (changing year reloads that calendar year).
+      if (
+        section === 'installments' &&
+        chartMonths.length > 0 &&
+        !chartMonths.includes(month)
+      ) {
         return
       }
       setSelectedMonth((current) => (current === month ? current : month))
       syncDashboardUrl({ month }, 'push')
     },
-    [chartMonths, syncDashboardUrl],
+    [section, chartMonths, syncDashboardUrl],
   )
 
   const changeSection = useCallback(
     (next: Section) => {
       setSection(next)
+      failedLoadRef.current = false
       syncDashboardUrl({ section: next }, 'push')
     },
     [syncDashboardUrl],
   )
 
   const refresh = useCallback(async () => {
+    failedLoadRef.current = false
     if (section === 'installments') {
-      failedLoadRef.current = false
       await loadInstallments()
       return
     }
+    if (section === 'cashflow') {
+      setCashflow(null)
+      await loadCashflow(selectedMonth)
+      return
+    }
     await loadInvestments()
-  }, [section, loadInstallments, loadInvestments])
+  }, [section, selectedMonth, loadInstallments, loadInvestments, loadCashflow])
 
   const ignorePurchase = useCallback(
     async (ignoreKey: string) => {
@@ -220,10 +274,21 @@ export function DashboardView({ apiFetch, onError }: Props) {
   )
 
   useEffect(() => {
-    if (section !== 'installments') {
+    if (section === 'investments') {
       if (!investments && !loading) {
         void loadInvestments()
       }
+      return
+    }
+    if (section === 'cashflow') {
+      if (loading || failedLoadRef.current) {
+        return
+      }
+      const selectedYear = Number(selectedMonth.slice(0, 4))
+      if (cashflow && cashflow.year === selectedYear) {
+        return
+      }
+      void loadCashflow(selectedMonth)
       return
     }
     if (loading || installments || failedLoadRef.current) {
@@ -234,23 +299,38 @@ export function DashboardView({ apiFetch, onError }: Props) {
     section,
     installments,
     investments,
+    cashflow,
     loading,
+    selectedMonth,
     loadInstallments,
     loadInvestments,
+    loadCashflow,
   ])
 
-  // Keep URL month inside the chart window once data is loaded.
+  // Parcelas: keep URL month inside the chart window once data is loaded.
   useEffect(() => {
-    if (!installments || chartMonths.length === 0) {
+    if (section !== 'installments') {
+      return
+    }
+    if (chartMonths.length === 0) {
       return
     }
     if (chartMonths.includes(selectedMonth)) {
       return
     }
-    const next = installments.selectedMonth
+    const next = installments?.selectedMonth ?? chartMonths[0]
+    if (!next) {
+      return
+    }
     setSelectedMonth(next)
     syncDashboardUrl({ month: next }, 'replace')
-  }, [installments, chartMonths, selectedMonth, syncDashboardUrl])
+  }, [
+    section,
+    installments,
+    chartMonths,
+    selectedMonth,
+    syncDashboardUrl,
+  ])
 
   const selectedIndex = chartMonths.indexOf(selectedMonth)
   const canGoPrev = selectedIndex > 0
@@ -258,6 +338,10 @@ export function DashboardView({ apiFetch, onError }: Props) {
     selectedIndex >= 0 && selectedIndex < chartMonths.length - 1
   const chartMin = chartMonths[0]
   const chartMax = chartMonths[chartMonths.length - 1]
+  const monthNavDisabled =
+    loading ||
+    (section === 'installments' && chartMonths.length === 0) ||
+    section === 'investments'
 
   return (
     <section className="dashboard reports">
@@ -268,11 +352,19 @@ export function DashboardView({ apiFetch, onError }: Props) {
               <h1>Relatórios</h1>
               <MonthNavigator
                 value={selectedMonth}
-                disabled={loading || chartMonths.length === 0}
-                min={chartMin}
-                max={chartMax}
-                disablePrev={!canGoPrev}
-                disableNext={!canGoNext}
+                disabled={monthNavDisabled}
+                min={section === 'installments' ? chartMin : undefined}
+                max={section === 'installments' ? chartMax : undefined}
+                disablePrev={
+                  section === 'installments'
+                    ? !canGoPrev
+                    : section === 'investments'
+                }
+                disableNext={
+                  section === 'installments'
+                    ? !canGoNext
+                    : section === 'investments'
+                }
                 onChange={changeSelectedMonth}
               />
               <button
@@ -302,6 +394,15 @@ export function DashboardView({ apiFetch, onError }: Props) {
               <button
                 type="button"
                 role="tab"
+                aria-selected={section === 'cashflow'}
+                className={section === 'cashflow' ? 'active' : ''}
+                onClick={() => changeSection('cashflow')}
+              >
+                Caixa
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={section === 'investments'}
                 className={section === 'investments' ? 'active' : ''}
                 onClick={() => changeSection('investments')}
@@ -314,7 +415,8 @@ export function DashboardView({ apiFetch, onError }: Props) {
           <div className="reports-body">
             {loading &&
             ((section === 'installments' && !installments) ||
-              (section === 'investments' && !investments)) ? (
+              (section === 'investments' && !investments) ||
+              (section === 'cashflow' && !cashflow)) ? (
               <p className="dash-empty">Carregando…</p>
             ) : null}
 
@@ -326,6 +428,13 @@ export function DashboardView({ apiFetch, onError }: Props) {
                 onSelectMonth={changeSelectedMonth}
                 onIgnorePurchase={ignorePurchase}
                 onUnignorePurchase={unignorePurchase}
+              />
+            ) : null}
+            {section === 'cashflow' && cashflow ? (
+              <CashflowPanel
+                data={cashflow}
+                selectedMonth={selectedMonth}
+                onSelectMonth={changeSelectedMonth}
               />
             ) : null}
             {section === 'investments' && investments ? (

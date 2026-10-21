@@ -11,7 +11,7 @@ export type AppView = keyof typeof ROUTES
 
 export type SettingsTab = 'banks' | 'accounts' | 'balances'
 
-export type ReportSection = 'installments' | 'investments'
+export type ReportSection = 'installments' | 'investments' | 'cashflow'
 
 export type ReconciliationKindFilter =
   | ''
@@ -21,7 +21,11 @@ export type ReconciliationKindFilter =
   | 'same_person_transfer'
 
 const SETTINGS_TABS: SettingsTab[] = ['banks', 'accounts', 'balances']
-const REPORT_SECTIONS: ReportSection[] = ['installments', 'investments']
+const REPORT_SECTIONS: ReportSection[] = [
+  'installments',
+  'investments',
+  'cashflow',
+]
 const KINDS: ReconciliationKindFilter[] = [
   'bank',
   'credit_purchase',

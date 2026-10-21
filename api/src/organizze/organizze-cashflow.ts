@@ -35,6 +35,23 @@ export function cashflowExpenseCents(row: BalanceTotals): number {
   return Math.round(Math.max(Math.abs(predicted), Math.abs(paid)));
 }
 
+/**
+ * End-of-period account balance from Organizze `/balances`.
+ * Prefer `predicted_balance` (full period) when present.
+ */
+export function cashflowBalanceCents(row: {
+  balance?: number;
+  predicted_balance?: number;
+}): number | null {
+  if (typeof row.predicted_balance === 'number') {
+    return Math.round(row.predicted_balance);
+  }
+  if (typeof row.balance === 'number') {
+    return Math.round(row.balance);
+  }
+  return null;
+}
+
 export function periodMonthKey(
   period: Pick<OrganizzeBalancePeriod, 'date' | 'date_range'>,
 ): string | null {

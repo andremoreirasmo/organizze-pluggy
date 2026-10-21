@@ -11,12 +11,14 @@ import {
   OrganizzeCategory,
   OrganizzeCreditCard,
   OrganizzeInvoice,
+  OrganizzeMonthlyCashflowRow,
   OrganizzePeriodCashflow,
   OrganizzeTag,
   OrganizzeTransaction,
   UpdateOrganizzeTransactionPayload,
 } from './organizze.types';
 import {
+  cashflowBalanceCents,
   cashflowExpenseCents,
   cashflowIncomeCents,
   periodMonthKey,
@@ -391,6 +393,25 @@ export class OrganizzeService {
     startDate: string;
     endDate: string;
   }): Promise<Map<string, OrganizzePeriodCashflow>> {
+    const series = await this.getMonthlyCashflowSeries(params);
+    const byMonth = new Map<string, OrganizzePeriodCashflow>();
+    for (const [monthKey, row] of series) {
+      byMonth.set(monthKey, {
+        incomeCents: row.incomeCents,
+        expenseCents: row.expenseCents,
+      });
+    }
+    return byMonth;
+  }
+
+  /**
+   * Monthly income/expense + EOM balance from Organizze `/balances`.
+   * Balance is the sum of per-account period balances when Organizze returns them.
+   */
+  async getMonthlyCashflowSeries(params: {
+    startDate: string;
+    endDate: string;
+  }): Promise<Map<string, OrganizzeMonthlyCashflowRow>> {
     const accounts = await this.listAccounts({ includeArchived: false });
     const rows = await Promise.all(
       accounts.map((account) =>
@@ -402,7 +423,15 @@ export class OrganizzeService {
         }),
       ),
     );
-    const byMonth = new Map<string, OrganizzePeriodCashflow>();
+    const byMonth = new Map<
+      string,
+      {
+        incomeCents: number;
+        expenseCents: number;
+        balanceSum: number;
+        balanceCount: number;
+      }
+    >();
     for (const row of rows) {
       const periods = row.balances ?? [];
       for (const period of periods) {
@@ -413,14 +442,31 @@ export class OrganizzeService {
         const prev = byMonth.get(monthKey) ?? {
           incomeCents: 0,
           expenseCents: 0,
+          balanceSum: 0,
+          balanceCount: 0,
         };
+        const periodBalance = cashflowBalanceCents(period);
         byMonth.set(monthKey, {
           incomeCents: prev.incomeCents + cashflowIncomeCents(period),
           expenseCents: prev.expenseCents + cashflowExpenseCents(period),
+          balanceSum:
+            periodBalance != null
+              ? prev.balanceSum + periodBalance
+              : prev.balanceSum,
+          balanceCount:
+            periodBalance != null ? prev.balanceCount + 1 : prev.balanceCount,
         });
       }
     }
-    return byMonth;
+    const result = new Map<string, OrganizzeMonthlyCashflowRow>();
+    for (const [monthKey, row] of byMonth) {
+      result.set(monthKey, {
+        incomeCents: row.incomeCents,
+        expenseCents: row.expenseCents,
+        balanceCents: row.balanceCount > 0 ? row.balanceSum : null,
+      });
+    }
+    return result;
   }
 
   async listCategories(options?: {

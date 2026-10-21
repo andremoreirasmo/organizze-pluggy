@@ -53,6 +53,12 @@ export type OrganizzePeriodCashflow = {
   expenseCents: number;
 };
 
+/** Monthly cashflow + optional EOM balance (sum of accounts). */
+export type OrganizzeMonthlyCashflowRow = OrganizzePeriodCashflow & {
+  /** Sum of per-account EOM balances when Organizze returns them. */
+  balanceCents: number | null;
+};
+
 export type OrganizzeCategoryKind = 'expenses' | 'earnings' | 'none';
 
 export type OrganizzeCategory = {
