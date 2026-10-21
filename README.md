@@ -224,19 +224,18 @@ $env:GCP_PROJECT_ID = "seu-projeto-gcp"
 .\scripts\deploy-cloudrun.ps1
 ```
 
-O script roda `prisma migrate deploy` e `gcloud run deploy --source`. Se `MEU_PLUGGY_STORAGE_STATE_GCS` estiver no `.env`, também faz upload do `storageState` local (se existir) e redeploy do **Cloud Run Job** Playwright (`scripts/deploy-meu-pluggy-refresh.ps1`).
+O script roda `prisma migrate deploy` e `gcloud run deploy --source`.
 
 Variáveis de ambiente em produção: mesmas do [`.env.example`](.env.example), com `NODE_ENV=production` (Cloud Run usa `PORT=8080`).
 
 ### CI (Cloud Build)
 
-Push em `master` dispara o trigger GCP ([`cloudbuild.yaml`](cloudbuild.yaml)): migrate Prisma, build/push da imagem do app, deploy Cloud Run. O Job `meu-pluggy-refresh` só é rebuildado quando `Dockerfile.meu-pluggy-refresh` ou `scripts/meu-pluggy-refresh.mjs` mudam (hash em GCS); force com substitution `_FORCE_JOB_REBUILD=true`.
+Push em `master` dispara o trigger GCP ([`cloudbuild.yaml`](cloudbuild.yaml)): migrate Prisma, build/push da imagem do app, deploy Cloud Run.
 
 Setup uma vez (conecta o repo GitHub no Cloud Build se ainda não estiver):
 
 ```powershell
 $env:GCP_PROJECT_ID = "brazuca-rd"
-$env:MEU_PLUGGY_STORAGE_STATE_GCS = "gs://SEU_BUCKET/meu-pluggy/storageState.json"
 .\scripts\setup-cloudbuild-trigger.ps1
 ```
 
@@ -246,7 +245,6 @@ Depois do deploy:
 
 1. Adicionar a URL pública em **Google OAuth → Authorized JavaScript origins**.
 2. Conferir `GET /api/health` (sem login).
-3. Conceder à SA do serviço Nest permissão para executar o Job (`roles/run.developer`) e ler o `progress.json` no GCS.
 
 ---
 

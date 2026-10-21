@@ -683,18 +683,11 @@ function formatTransferAccountHint(hint: TransferCounterpartHint): string {
 type Props = {
   apiFetch: ApiFetch
   onError: (message: string | null) => void
-  onMeuPluggyRefresh?: () => void
-  meuPluggyRefreshBusy?: boolean
-  /** Bumps when Meu Pluggy sync finishes — reloads the reconcile queue. */
-  meuPluggyRefreshDoneToken?: number
 }
 
 export function ReconciliationView({
   apiFetch,
   onError,
-  onMeuPluggyRefresh,
-  meuPluggyRefreshBusy = false,
-  meuPluggyRefreshDoneToken = 0,
 }: Props) {
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -1005,13 +998,6 @@ export function ReconciliationView({
   useEffect(() => {
     void loadQueue()
   }, [loadQueue])
-
-  useEffect(() => {
-    if (meuPluggyRefreshDoneToken <= 0) {
-      return
-    }
-    void loadQueue().catch(() => undefined)
-  }, [meuPluggyRefreshDoneToken, loadQueue])
 
   const syncReconcileUrl = useCallback(
     (
@@ -1932,19 +1918,6 @@ export function ReconciliationView({
             >
               {loading ? 'Atualizando…' : 'Atualizar'}
             </button>
-            {onMeuPluggyRefresh ? (
-              <button
-                type="button"
-                className="reports-refresh"
-                disabled={toolbarBusy || meuPluggyRefreshBusy}
-                title="Atualiza conexões no Meu Pluggy (mostra progresso)"
-                onClick={() => onMeuPluggyRefresh()}
-              >
-                {meuPluggyRefreshBusy
-                  ? 'Sincronizando…'
-                  : 'Atualizar Open Finance'}
-              </button>
-            ) : null}
             <a
               className="recon-sync-link"
               href="https://meu.pluggy.ai/connections/"
