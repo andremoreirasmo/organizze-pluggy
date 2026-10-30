@@ -49,6 +49,7 @@ import {
   daysBetween,
   looksLikeInvoicePayment,
   looksLikeSamePersonTransfer,
+  installmentSeriesAmountCents,
   parseDateOnly,
   remainingInstallments,
   scoreMatch,
@@ -601,7 +602,9 @@ export class ReconciliationService {
           asInstallmentSeries: createAsInstallmentSeries,
         }),
         date: pluggy.date.slice(0, 10),
-        amount_cents: amountCents,
+        amount_cents: createAsInstallmentSeries
+          ? installmentSeriesAmountCents(amountCents, seriesTotal)
+          : amountCents,
         paid: body.paid ?? true,
         notes,
         category_id: body.categoryId ?? null,
@@ -817,7 +820,10 @@ export class ReconciliationService {
       const tx = await this.organizze.createTransaction({
         description: params.description,
         date: purchaseDate,
-        amount_cents: -Math.abs(params.amountCents),
+        amount_cents: -installmentSeriesAmountCents(
+          Math.abs(params.amountCents),
+          seriesTotal,
+        ),
         paid: true,
         notes: params.withMarker ? markerNotes : null,
         category_id: params.categoryId,
@@ -859,7 +865,10 @@ export class ReconciliationService {
         const receiveTx = await this.organizze.createTransaction({
           description: `A receber — ${person.name} — ${baseDescription}`,
           date: body.receiveDate,
-          amount_cents: Math.abs(person.amountCents),
+          amount_cents: installmentSeriesAmountCents(
+            Math.abs(person.amountCents),
+            seriesTotal,
+          ),
           paid: false,
           notes: null,
           category_id: body.receiveCategoryId,

@@ -1,7 +1,20 @@
 import {
+  installmentSeriesAmountCents,
   isInstallmentPurchase,
   remainingInstallments,
 } from './reconciliation.types';
+
+describe('installmentSeriesAmountCents', () => {
+  it('multiplies the parcel by the series length so Organizze splits back to the parcel', () => {
+    expect(installmentSeriesAmountCents(-29000, 5)).toBe(-145000);
+    expect(installmentSeriesAmountCents(29000, 5)).toBe(145000);
+  });
+
+  it('keeps single-shot amounts unchanged', () => {
+    expect(installmentSeriesAmountCents(-29000, 1)).toBe(-29000);
+    expect(installmentSeriesAmountCents(-29000, 0)).toBe(-29000);
+  });
+});
 
 describe('remainingInstallments', () => {
   it('returns 0/1 for non-series totals', () => {

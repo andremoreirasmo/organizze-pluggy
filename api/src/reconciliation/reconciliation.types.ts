@@ -205,6 +205,18 @@ export function remainingInstallments(
   return total - current + 1;
 }
 
+/**
+ * Organizze treats `amount_cents` on a create with `installments_attributes`
+ * as the series total and splits it across the parcels. Open Finance gives us
+ * the per-parcel amount, so the payload must carry parcel × series length.
+ */
+export function installmentSeriesAmountCents(
+  parcelAmountCents: number,
+  seriesTotal: number,
+): number {
+  return seriesTotal > 1 ? parcelAmountCents * seriesTotal : parcelAmountCents;
+}
+
 function normalizeDescription(value: string): string {
   return value
     .normalize('NFD')
